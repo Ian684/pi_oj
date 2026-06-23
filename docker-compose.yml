@@ -1,0 +1,60 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: oj_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+
+  web:
+    build:
+      context: ./backend
+      target: web
+    container_name: oj_fastapi
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./backend
+      target: worker
+    container_name: oj_celery_worker
+    # Docker socket 本身等同主機 root 權限；worker 必須能存取它才能建立 judge 容器。
+    user: "0:0"
+    restart: unless-stopped
+    command: celery -A tasks worker --loglevel=info --concurrency=1
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      JUDGE_IMAGE: pi_oj-judge:latest
+      HOST_SANDBOX_ROOT: ${HOST_SANDBOX_ROOT}
+      UVA_USERNAME: ${UVA_USERNAME:-}
+      UVA_PASSWORD: ${UVA_PASSWORD:-}
+      UVA_LOGIN_MODE: ${UVA_LOGIN_MODE:-browser}
+      UVA_CPP_LANGUAGE_ID: ${UVA_CPP_LANGUAGE_ID:-5}
+      UVA_PY_LANGUAGE_ID: ${UVA_PY_LANGUAGE_ID:-6}
+    volumes:
+      - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backend/sandboxes:/sandboxes
+    depends_on:
+      - redis
+
+  judge-image:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.judge
+    image: pi_oj-judge:latest
+    profiles: ["build-only"]
+
+volumes:
+  redis_data:
+

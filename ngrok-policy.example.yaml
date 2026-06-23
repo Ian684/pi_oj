@@ -1,0 +1,48 @@
+# Choose exactly one login mode below.
+# Default: Microsoft OAuth restricted to one school account.
+#
+# Run with:
+#   ngrok http 8000 --traffic-policy-file ngrok-policy.yaml
+#
+# Note: keep your real ngrok-policy.yaml private. It may contain account rules
+# or Basic Auth credentials.
+
+on_http_request:
+  # Mode 1: Microsoft login, restricted to one account.
+  # Good for school / Microsoft 365 accounts such as mail.yzu.edu.tw.
+  - actions:
+      - type: oauth
+        config:
+          provider: microsoft
+  - expressions:
+      - "actions.ngrok.oauth.identity.email != 's15465465@mail.yzu.edu.tw'"
+    actions:
+      - type: deny
+
+  # Mode 2: Google login, restricted to one Gmail / Google Workspace account.
+  # To use this mode, comment out Mode 1 above and uncomment this block.
+  # - actions:
+  #     - type: oauth
+  #       config:
+  #         provider: google
+  # - expressions:
+  #     - "actions.ngrok.oauth.identity.email != 'your-email@gmail.com'"
+  #   actions:
+  #     - type: deny
+
+  # Mode 3: Basic Auth username/password.
+  # To use this mode, comment out Mode 1 above and uncomment this block.
+  # Replace the example username and password before using it.
+  # - actions:
+  #     - type: basic-auth
+  #       config:
+  #         realm: "Pi OJ"
+  #         credentials:
+  #           - "username:change-this-password"
+  #         enforce: true
+
+  # Domain examples:
+  # Allow all Microsoft/Google accounts from the school domain instead of one email.
+  # Replace the exact-email expression above with:
+  #   - "!actions.ngrok.oauth.identity.email.endsWith('@mail.yzu.edu.tw')"
+

@@ -1,0 +1,6 @@
+.env
+backend/sandboxes/*
+!backend/sandboxes/.gitkeep
+__pycache__/
+*.pyc
+ngrok-policy.yaml
