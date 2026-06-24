@@ -25,6 +25,11 @@ app = worker
 SANDBOX_ROOT = Path("/sandboxes")
 HOST_SANDBOX_ROOT = Path(os.getenv("HOST_SANDBOX_ROOT", "/home/ian/pi_oj/backend/sandboxes"))
 JUDGE_IMAGE = os.getenv("JUDGE_IMAGE", "pi_oj-judge:latest")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
+OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/responses")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+GEMINI_API_URL = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 
 def normalize_output(value: str) -> str:
@@ -35,6 +40,235 @@ def normalize_output(value: str) -> str:
 def normalize_output_without_blank_lines(value: str) -> str:
     normalized = value.replace("\r\n", "\n").replace("\r", "\n")
     return "\n".join(line.rstrip() for line in normalized.split("\n") if line.strip())
+
+
+def truncate_context(value: str, limit: int = 12_000) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "\n...（內容過長，已截斷）"
+
+
+def extract_openai_text(data: dict) -> str:
+    if isinstance(data.get("output_text"), str):
+        return data["output_text"]
+
+    chunks = []
+    for item in data.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if isinstance(content.get("text"), str):
+                chunks.append(content["text"])
+    return "\n".join(chunks).strip()
+
+
+def extract_gemini_text(data: dict) -> str:
+    chunks = []
+    for candidate in data.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            if isinstance(part.get("text"), str):
+                chunks.append(part["text"])
+    return "\n".join(chunks).strip()
+
+
+def download_uva_pdf_text(problem_number: int) -> tuple[str, str]:
+    from pypdf import PdfReader
+
+    pdf_url = f"https://onlinejudge.org/external/{problem_number // 100}/{problem_number}.pdf"
+    try:
+        response = requests.get(
+            pdf_url,
+            headers={"User-Agent": "Pi-OJ/1.0 (+https://onlinejudge.org/)"},
+            timeout=(5, 60),
+        )
+        response.raise_for_status()
+    except requests.Timeout as exc:
+        raise RuntimeError("UVA 官方 PDF 下載逾時（60 秒），請稍後再試") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"UVA 官方 PDF 下載失敗：{exc}") from exc
+
+    if not response.content.startswith(b"%PDF"):
+        raise RuntimeError("UVA 回應不是有效的 PDF，可能是題號不存在或網站暫時阻擋")
+
+    reader = PdfReader(BytesIO(response.content))
+
+    def extract_pdf_text(mode: str) -> str:
+        chunks = []
+        for page in reader.pages:
+            try:
+                chunks.append(page.extract_text(extraction_mode=mode) or "")
+            except TypeError:
+                chunks.append(page.extract_text() or "")
+        return "\n\f\n".join(chunks).replace("\r\n", "\n").replace("\r", "\n")
+
+    return extract_pdf_text("layout"), extract_pdf_text("plain")
+
+
+def is_pdf_noise_line(line: str) -> bool:
+    compact = re.sub(r"\s+", " ", line).strip()
+    if not compact:
+        return False
+    return bool(
+        re.search(r"\bOJ\s*:\s*\d+\b.*\d+\s*/\s*\d+\s*$", compact, re.I)
+        or re.search(r"Universidad\s+de\s+V\s*alladolid\s+OJ", compact, re.I)
+        or re.search(r"UVa\s+Online\s+Judge.*\d+\s*/\s*\d+\s*$", compact, re.I)
+        or re.search(r"^\d+\s*/\s*\d+\s*$", compact)
+        or re.search(r"^\d+\s*[-–]\s+.+\s+\d+\s*/\s*\d+\s*$", compact)
+        or re.fullmatch(r"\d+\s*/\s*\d+", compact)
+    )
+
+
+def clean_problem_statement_text(value: str) -> str:
+    lines = []
+    for raw_line in value.replace("\r\n", "\n").replace("\r", "\n").replace("\f", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line or is_pdf_noise_line(line):
+            continue
+        lines.append(re.sub(r"[ \t]{2,}", " ", line))
+    return "\n".join(lines).strip()
+
+
+def extract_uva_problem_statement(problem_number: int) -> str:
+    layout_text, plain_text = download_uva_pdf_text(problem_number)
+    text = layout_text if re.search(r"(?im)^\s*Sample\s+Input\s*$", layout_text) else plain_text
+    sample_heading = re.search(r"(?im)^\s*Sample\s+Input\s*$", text)
+    if sample_heading:
+        text = text[:sample_heading.start()]
+    statement = clean_problem_statement_text(text)
+    if not statement:
+        raise RuntimeError("無法從 UVA PDF 抽出題目敘述")
+    return statement[:80_000]
+
+
+def build_ai_prompt(
+    mode: str,
+    problem_id: str,
+    language: str,
+    code: str,
+    input_data: str,
+    expected_output: str,
+    stdout: str,
+    error_log: str,
+    verdict: str,
+    question: str,
+    problem_statement: str = "",
+) -> str:
+    if mode == "translate":
+        return f"""You are translating a UVA Online Judge problem statement for a Traditional Chinese reader.
+
+Task:
+- Translate the problem statement into clear Traditional Chinese.
+- Preserve section names, mathematical notation, variable names, and limits accurately.
+- Do not solve the problem and do not provide code.
+- If the statement contains input/output format details, make them easy to understand.
+- If the user wrote an extra question, answer only if it is about understanding the statement.
+
+UVA problem: {problem_id}
+User question:
+```text
+{truncate_context(question, 4_000) or "(none)"}
+```
+
+Problem statement extracted from the UVA PDF:
+```text
+{truncate_context(problem_statement, 70_000)}
+```
+"""
+
+    if mode == "tests":
+        return f"""You are an Online Judge test-data assistant. Use the UVA problem statement to create local test cases.
+
+Task:
+- Answer in Traditional Chinese.
+- Create ONE combined local test input and its exact expected stdout, suitable for pasting directly into the app's stdin / expected stdout boxes.
+- Prefer edge cases and bug-hunting cases. If the user asks for random tests, include small random-style cases whose outputs you can compute confidently.
+- Keep the generated test small enough to inspect by hand.
+- Do not provide a full accepted solution or code.
+- If you cannot confidently compute expected output, say so instead of inventing one.
+
+Required output format. Put these two fenced blocks first, before any explanation:
+stdin:
+```text
+...
+```
+expected stdout:
+```text
+...
+```
+
+After the two blocks, add a short Traditional Chinese note explaining what the test is meant to catch.
+
+UVA problem: {problem_id}
+User request:
+```text
+{truncate_context(question, 4_000) or "?????????????????????????????"}
+```
+
+Problem statement extracted from the UVA PDF:
+```text
+{truncate_context(problem_statement, 70_000)}
+```
+
+Current code, for bug-focused tests only:
+```{language}
+{truncate_context(code, 20_000)}
+```
+"""
+
+    if mode == "hint":
+        mode_instruction = """你現在是「解題提示」模式。
+- 優先說明題意、輸入輸出格式、核心觀察、可用資料結構或演算法方向。
+- 不要根據目前程式逐行改錯，除非使用者問題明確要求。
+- 回答格式請用：1. 題意整理 2. 關鍵想法 3. 常見陷阱 4. 下一步。"""
+    else:
+        mode_instruction = """你現在是「除錯協助」模式。
+- 優先根據目前 verdict、stdout、expected stdout、error log、程式碼找錯。
+- 請指出最可疑的 1 到 3 個錯誤位置或邏輯問題。
+- 回答格式請用：1. 觀察到的差異 2. 最可能原因 3. 建議修改方向 4. 建議測資。
+- 不要重講完整題解，除非那是錯誤根因。"""
+
+    return f"""你是 Online Judge 的 AI 助教。請用繁體中文回答，重點清楚、不要冗長。
+
+{mode_instruction}
+
+UVA 題號：{problem_id or "未填"}
+語言：{language}
+目前 verdict：{verdict or "尚未執行"}
+使用者問題：
+```text
+{truncate_context(question, 4_000) or "（未填）"}
+```
+
+規則：
+- 不要直接提供完整 AC 程式碼。
+- 可以指出觀念、演算法方向、邊界條件、輸入格式陷阱。
+- 如果使用者問題很具體，優先回答使用者問題。
+- 如果資訊不足，請列出下一步應該測什麼。
+
+程式碼：
+```{language}
+{truncate_context(code)}
+```
+
+stdin：
+```text
+{truncate_context(input_data)}
+```
+
+標準輸出 expected stdout：
+```text
+{truncate_context(expected_output)}
+```
+
+目前程式輸出 stdout：
+```text
+{truncate_context(stdout)}
+```
+
+錯誤訊息 error log：
+```text
+{truncate_context(error_log, 6_000)}
+```
+"""
 
 
 def run_container(host_dir: Path, command: list[str], stdin_data: str = "", timeout: int = 5) -> tuple[int, str, str]:
@@ -674,33 +908,7 @@ def validate_problem_number(problem_id: str) -> int:
 
 
 def fetch_uva_sample(problem_number: int) -> dict:
-    from pypdf import PdfReader
-
-    pdf_url = f"https://onlinejudge.org/external/{problem_number // 100}/{problem_number}.pdf"
-    try:
-        response = requests.get(
-            pdf_url,
-            headers={"User-Agent": "Pi-OJ/1.0 (+https://onlinejudge.org/)"},
-            timeout=(5, 60),
-        )
-        response.raise_for_status()
-    except requests.Timeout as exc:
-        raise RuntimeError("UVA 官方 PDF 下載逾時（60 秒），請稍後再試") from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(f"UVA 官方 PDF 下載失敗：{exc}") from exc
-
-    if not response.content.startswith(b"%PDF"):
-        raise RuntimeError("UVA 回應不是有效的 PDF，可能是題號不存在或網站暫時阻擋")
-    reader = PdfReader(BytesIO(response.content))
-
-    def extract_pdf_text(mode: str) -> str:
-        chunks = []
-        for page in reader.pages:
-            try:
-                chunks.append(page.extract_text(extraction_mode=mode) or "")
-            except TypeError:
-                chunks.append(page.extract_text() or "")
-        return "\n\f\n".join(chunks).replace("\r\n", "\n").replace("\r", "\n")
+    layout_text, plain_text = download_uva_pdf_text(problem_number)
 
     def has_sample_headings(value: str) -> bool:
         return bool(
@@ -709,26 +917,11 @@ def fetch_uva_sample(problem_number: int) -> dict:
         )
 
     # layout 模式比較會保留 PDF 裡的垂直間距；plain 當備援，避免少數舊 PDF 抽不到標題。
-    layout_text = extract_pdf_text("layout")
-    plain_text = extract_pdf_text("plain")
     text = layout_text if has_sample_headings(layout_text) else plain_text
     input_heading = re.search(r"(?im)^\s*Sample\s+Input\s*$", text)
     output_heading = re.search(r"(?im)^\s*Sample\s+Output\s*$", text)
     if not input_heading or not output_heading or output_heading.start() <= input_heading.end():
         raise RuntimeError("官方 PDF 中找不到 Sample Input / Sample Output；此題可能沒有標準範例格式")
-
-    def is_pdf_noise_line(line: str) -> bool:
-        compact = re.sub(r"\s+", " ", line).strip()
-        if not compact:
-            return False
-        return bool(
-            re.search(r"\bOJ\s*:\s*\d+\b.*\d+\s*/\s*\d+\s*$", compact, re.I)
-            or re.search(r"Universidad\s+de\s+V\s*alladolid\s+OJ", compact, re.I)
-            or re.search(r"UVa\s+Online\s+Judge.*\d+\s*/\s*\d+\s*$", compact, re.I)
-            or re.search(r"^\d+\s*/\s*\d+\s*$", compact)
-            or re.search(r"^\d+\s*[-–]\s+.+\s+\d+\s*/\s*\d+\s*$", compact)
-            or re.fullmatch(r"\d+\s*/\s*\d+", compact)
-        )
 
     def clean_sample_section(section: str) -> str:
         lines = []
@@ -1113,6 +1306,141 @@ def fetch_test_data_task(problem_id: str, source: str) -> dict:
         return {"status": "SE", "error_log": "目前只支援載入 UVA 題目範例；uDebug 請使用開啟按鈕手動查看"}
     except Exception as exc:
         return {"status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
+
+
+@worker.task
+def ask_ai_helper_task(
+    mode: str,
+    problem_id: str,
+    language: str,
+    code: str,
+    input_data: str,
+    expected_output: str,
+    stdout: str,
+    error_log: str,
+    verdict: str,
+    question: str,
+) -> dict:
+    provider = os.getenv("AI_PROVIDER", AI_PROVIDER).lower()
+    if provider not in {"openai", "gemini"}:
+        return {
+            "status": "SE",
+            "message": "AI_PROVIDER 設定錯誤，請使用 openai 或 gemini。",
+            "error_log": f"AI_PROVIDER={provider}",
+        }
+
+    api_key_env = "OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY"
+    api_key = os.getenv(api_key_env, "")
+    if not api_key:
+        return {
+            "status": "SE",
+            "message": f"尚未設定 {api_key_env}，無法使用 AI 助教。",
+            "error_log": f"Set {api_key_env} in .env and restart the worker.",
+        }
+
+    problem_statement = ""
+    if mode in {"translate", "tests"}:
+        try:
+            problem_statement = extract_uva_problem_statement(validate_problem_number(problem_id))
+        except Exception as exc:
+            action = "題目翻譯" if mode == "translate" else "AI 測資產生"
+            return {
+                "status": "SE",
+                "message": f"{action}前讀取 UVA PDF 失敗，請確認題號或稍後再試。",
+                "error_log": f"{type(exc).__name__}: {exc}",
+            }
+
+    prompt = build_ai_prompt(
+        mode=mode,
+        problem_id=problem_id,
+        language=language,
+        code=code,
+        input_data=input_data,
+        expected_output=expected_output,
+        stdout=stdout,
+        error_log=error_log,
+        verdict=verdict,
+        question=question,
+        problem_statement=problem_statement,
+    )
+
+    try:
+        if provider == "openai":
+            model = os.getenv("OPENAI_MODEL", OPENAI_MODEL)
+            response = requests.post(
+                OPENAI_API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": [
+                        {
+                            "role": "system",
+                            "content": "You are a careful programming tutor for online judge problems. Do not reveal a full accepted solution.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_output_tokens": int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "900")),
+                },
+                timeout=(10, 90),
+            )
+        else:
+            model = os.getenv("GEMINI_MODEL", GEMINI_MODEL)
+            endpoint = f"{GEMINI_API_URL}/models/{model}:generateContent"
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json={
+                    "systemInstruction": {
+                        "parts": [
+                            {
+                                "text": "You are a careful programming tutor for online judge problems. Do not reveal a full accepted solution."
+                            }
+                        ]
+                    },
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "900")),
+                        "temperature": float(os.getenv("GEMINI_TEMPERATURE", "0.4")),
+                    },
+                },
+                timeout=(10, 90),
+            )
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = ""
+        if exc.response is not None:
+            try:
+                detail = exc.response.text[:4000]
+            except Exception:
+                detail = ""
+        return {
+            "status": "SE",
+            "message": f"AI 助教呼叫 {provider} 失敗。請檢查 API key、模型名稱、帳戶額度、免費層限制或網路連線。",
+            "error_log": f"{exc}\n{detail}".strip(),
+        }
+    except requests.RequestException as exc:
+        return {
+            "status": "SE",
+            "message": f"AI 助教呼叫 {provider} 失敗。請檢查 worker 是否能連外。",
+            "error_log": str(exc),
+        }
+
+    data = response.json()
+    text = extract_openai_text(data) if provider == "openai" else extract_gemini_text(data)
+    if not text:
+        return {"status": "SE", "message": "AI 助教沒有回傳文字。", "error_log": str(data)[:4000]}
+
+    return {
+        "status": "AI",
+        "mode": mode,
+        "provider": provider,
+        "model": model,
+        "message": text[:20_000],
+    }
 
 
 @worker.task

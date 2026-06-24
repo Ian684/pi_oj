@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from tasks import fetch_test_data_task, judge_submission_task, submit_uva_task, worker
+from tasks import ask_ai_helper_task, fetch_test_data_task, judge_submission_task, submit_uva_task, worker
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -32,6 +32,34 @@ class RunRequest(BaseModel):
     language: str
     input_data: str = Field(default="", max_length=1_000_000)
     expected_output: str = Field(default="", max_length=1_000_000)
+
+
+class AiHelpRequest(BaseModel):
+    mode: str
+    problem_id: str = Field(pattern=r"^\d{1,6}$")
+    language: str
+    code: str = Field(default="", max_length=100_000)
+    input_data: str = Field(default="", max_length=100_000)
+    expected_output: str = Field(default="", max_length=100_000)
+    stdout: str = Field(default="", max_length=100_000)
+    error_log: str = Field(default="", max_length=50_000)
+    verdict: str = Field(default="", max_length=32)
+    question: str = Field(default="", max_length=4_000)
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
+        if value not in {"hint", "debug", "translate", "tests"}:
+            raise ValueError("mode must be hint, debug, translate, or tests")
+        return value
+
+    @field_validator("problem_id")
+    @classmethod
+    def validate_problem_id(cls, value: str) -> str:
+        return normalize_uva_problem_id(value)
+
+
+
 
 
 class UvaSubmitRequest(BaseModel):
@@ -123,6 +151,27 @@ def run_code(payload: RunRequest) -> dict:
         expected_output=payload.expected_output,
     )
     return {"submission_id": submission_id, "task_id": task.id, "status": "QUEUED"}
+
+
+@app.post("/api/ai/help", status_code=202)
+def ai_help(payload: AiHelpRequest) -> dict:
+    validate_language(payload.language)
+    task = ask_ai_helper_task.delay(
+        mode=payload.mode,
+        problem_id=payload.problem_id,
+        language=payload.language,
+        code=payload.code,
+        input_data=payload.input_data,
+        expected_output=payload.expected_output,
+        stdout=payload.stdout,
+        error_log=payload.error_log,
+        verdict=payload.verdict,
+        question=payload.question,
+    )
+    return {"task_id": task.id, "status": "QUEUED"}
+
+
+
 
 
 @app.post("/api/uva/submit", status_code=202)

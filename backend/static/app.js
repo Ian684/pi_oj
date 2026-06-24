@@ -5,6 +5,7 @@ let monacoVimApi = null;
 let vimMode = null;
 let currentPdfObjectUrl = null;
 let lastSubmittedExpectedOutput = "";
+let lastRunResult = null;
 
 function applyTheme(theme) {
   root.dataset.theme = theme;
@@ -25,15 +26,16 @@ const templates = {
 
 const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
 $("code").value = saved.cpp || templates.cpp;
+$("problemId").value = localStorage.getItem("pi-oj-problem-id") || "";
 const savedTests = JSON.parse(localStorage.getItem("pi-oj-tests") || "{}");
 let activeTestSource = "sample";
 
 const testSourceLabels = {
-  sample: ["題目範例輸入", "題目範例輸出（留空時只執行）"],
+  sample: ["題目範例輸入", "題目範例輸出（空白時只執行）"],
   udebug: ["uDebug 輸入（手動貼上）", "uDebug 輸出（手動貼上）"],
-  custom: ["自訂測試輸入", "自訂預期輸出（留空時只執行）"],
+  custom: ["自訂測試輸入", "自訂答案輸出（空白時只執行）"],
+  ai: ["AI 測資輸入", "AI 測資標準輸出"],
 };
-
 function getCode() {
   return codeEditor ? codeEditor.getValue() : $("code").value;
 }
@@ -61,7 +63,8 @@ function switchTestSource(source, saveCurrent = true) {
   $("expected").value = savedTest.expected || "";
   $("inputLabel").textContent = testSourceLabels[source][0];
   $("expectedLabel").textContent = testSourceLabels[source][1];
-  $("fetchTests").hidden = source !== "sample";
+  $("fetchTests").hidden = !["sample", "ai"].includes(source);
+  $("fetchTests").textContent = source === "ai" ? "AI 產生" : "載入";
   $("openUdebug").hidden = source !== "udebug";
   localStorage.setItem("pi-oj-test-source", source);
 }
@@ -75,21 +78,42 @@ async function fetchSelectedTests() {
     toast("請先輸入合法的 UVA 題號");
     return;
   }
-  if (source !== "sample") return;
+  if (!["sample", "ai"].includes(source)) return;
 
   const button = $("fetchTests");
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "載入中…";
+  button.textContent = source === "ai" ? "AI 產生中..." : "載入中...";
   try {
-    const queued = await request("/api/tests/fetch", {
-      method: "POST",
-      body: JSON.stringify({problem_id: problemId, source}),
-    });
-    const result = await poll(queued.task_id);
-    if (!result || result.status !== "FETCHED") {
-      throw new Error(result?.error_log || "測資載入失敗");
+    let result;
+    if (source === "sample") {
+      const queued = await request("/api/tests/fetch", {
+        method: "POST",
+        body: JSON.stringify({problem_id: problemId, source}),
+      });
+      result = await poll(queued.task_id);
+      if (!result || result.status !== "FETCHED") {
+        throw new Error(result?.error_log || "測資載入失敗");
+      }
+    } else {
+      switchSidePanel("ai");
+      setAiOutput("AI 助教正在讀取 UVA PDF 並產生可套用的 input/output 測資...");
+      const aiResult = await requestAi("tests");
+      showAiResult(aiResult);
+      const parsed = parseAiGeneratedTest(aiResult.message || "");
+      if (!parsed) {
+        throw new Error("AI 回覆中找不到可套用的 stdin / expected stdout 區塊");
+      }
+      switchSidePanel("test");
+      result = {
+        status: "FETCHED",
+        source,
+        input_data: parsed.input,
+        expected_output: parsed.expected,
+        message: "已套用 AI 產生的測資",
+      };
     }
+
     savedTests[source] = {
       input: result.input_data,
       expected: result.expected_output,
@@ -102,6 +126,7 @@ async function fetchSelectedTests() {
     toast(result.message || "測資已載入");
   } catch (error) {
     toast(error.message);
+    if (source === "ai") setAiOutput(error.message, true);
   } finally {
     button.disabled = false;
     button.textContent = originalText;
@@ -296,7 +321,7 @@ function applyDiagnostics(result) {
 function setVerdict(status, pending = false) {
   const el = $("verdict");
   el.textContent = status;
-  el.className = `pill ${pending ? "neutral" : ["AC", "OK", "SUBMITTED"].includes(status) ? "ok" : "bad"}`;
+  el.className = `pill ${pending ? "neutral" : ["AC", "OK", "SUBMITTED", "AI"].includes(status) ? "ok" : "bad"}`;
 }
 
 async function request(url, options = {}) {
@@ -322,10 +347,12 @@ function validUvaProblemId(value) {
 }
 
 function showResult(result) {
+  lastRunResult = result;
+  $("output").classList.remove("ai-output");
   setVerdict(result.status || "SE");
   const isUva = Boolean(result.uva_submission_id);
   $("resultMeta").hidden = false;
-  const localSourceNames = {sample: "題目範例", udebug: "uDebug", custom: "自訂測資"};
+  const localSourceNames = {sample: "題目範例", udebug: "uDebug", ai: "AI 測資", custom: "自訂測資"};
   $("resultSource").textContent = isUva
     ? `UVA ${result.problem_id || ""}`.trim()
     : `本機・${localSourceNames[activeTestSource]}`;
@@ -333,8 +360,9 @@ function showResult(result) {
   $("resultVerdict").textContent = result.verdict || result.status || "—";
   $("resultTime").textContent = result.cpu_time || "—";
   $("output").classList.remove("diff-output");
-  if (!isUva && result.status === "WA" && lastSubmittedExpectedOutput) {
-    renderWrongAnswerDiff(result.stdout || "", lastSubmittedExpectedOutput, result.message);
+  const expectedForDiff = lastSubmittedExpectedOutput || $("expected").value;
+  if (!isUva && result.status === "WA" && expectedForDiff) {
+    renderWrongAnswerDiff(result.stdout || "", expectedForDiff, result.message);
     applyDiagnostics(result);
     return;
   }
@@ -346,6 +374,75 @@ function showResult(result) {
   applyDiagnostics(result);
 }
 
+function setAiOutput(message, isError = false) {
+  const target = $("aiOutput");
+  target.textContent = message;
+  target.classList.toggle("ai-error", isError);
+}
+
+function parseAiGeneratedTest(message) {
+  const inputMatch = message.match(/(?:^|\n)\s*(?:stdin|input)\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
+  const expectedMatch = message.match(/(?:^|\n)\s*(?:expected\s+stdout|expected\s+output|stdout|output)\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
+  if (!inputMatch || !expectedMatch) return null;
+  return {
+    input: inputMatch[1].replace(/\n$/, ""),
+    expected: expectedMatch[1].replace(/\n$/, ""),
+  };
+}
+
+async function requestAi(mode) {
+  const result = lastRunResult || {};
+  const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({
+    mode,
+    problem_id: $("problemId").value,
+    language: $("language").value,
+    code: getCode(),
+    input_data: $("input").value,
+    expected_output: $("expected").value,
+    stdout: result.stdout || "",
+    error_log: result.error_log || "",
+    verdict: result.verdict || result.status || "",
+    question: $("aiQuestion").value,
+  })});
+  return poll(queued.task_id);
+}
+
+function showAiResult(result) {
+  const aiModeNames = {hint: "AI・提示", debug: "AI・除錯", translate: "AI・翻譯", tests: "AI・測資"};
+  const title = aiModeNames[result.mode] || "AI";
+  const meta = [result.provider, result.model].filter(Boolean).join(" / ");
+  const parts = [`${title}${meta ? ` (${meta})` : ""}`];
+  if (result.message) parts.push(result.message);
+  if (result.error_log) parts.push(`error:\n${result.error_log}`);
+  setAiOutput(parts.join("\n\n") || JSON.stringify(result, null, 2), result.status === "SE");
+}
+
+async function askAi(mode) {
+  if (!validUvaProblemId($("problemId").value)) {
+    toast("請先輸入合法的 UVA 題號，AI 助教需要知道是哪一題");
+    return;
+  }
+  const buttons = {hint: $("aiHint"), debug: $("aiDebug"), translate: $("aiTranslate")};
+  const button = buttons[mode] || $("aiHint");
+  button.disabled = true;
+  const waitingMessages = {
+    translate: "AI 助教正在讀取 UVA PDF 並翻譯題目...",
+    hint: "AI 助教正在閱讀題號與程式碼...",
+    debug: "AI 助教正在閱讀測試結果與程式碼...",
+  };
+  setAiOutput(waitingMessages[mode] || "AI 助教正在思考...");
+
+  try {
+    switchSidePanel("ai");
+    showAiResult(await requestAi(mode));
+  } catch (error) {
+    setAiOutput(error.message, true);
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function normalizeDiffText(value) {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\s+$/, "");
 }
@@ -353,6 +450,7 @@ function normalizeDiffText(value) {
 function renderWrongAnswerDiff(stdout, expectedOutput, message = "") {
   const output = $("output");
   output.textContent = "";
+  output.classList.remove("ai-output");
   output.classList.add("diff-output");
 
   if (message) {
@@ -408,6 +506,7 @@ async function execute(kind) {
   clearDiagnostics();
   $("resultMeta").hidden = true;
   setVerdict(kind === "run" ? "執行中" : "提交中", true);
+  $("output").classList.remove("ai-output", "diff-output");
   $("output").textContent = "工作已進入佇列…";
   try {
     let response;
@@ -434,6 +533,7 @@ async function execute(kind) {
     showResult(await poll(response.task_id));
   } catch (error) {
     setVerdict("ERROR");
+    $("output").classList.remove("ai-output", "diff-output");
     $("output").textContent = error.message;
     toast(error.message);
   } finally {
@@ -441,6 +541,19 @@ async function execute(kind) {
   }
 }
 
+function switchSidePanel(panel) {
+  const isAi = panel === "ai";
+  $("testTab").classList.toggle("active", !isAi);
+  $("aiTab").classList.toggle("active", isAi);
+  $("testTab").setAttribute("aria-selected", String(!isAi));
+  $("aiTab").setAttribute("aria-selected", String(isAi));
+  $("testPanel").hidden = isAi;
+  $("aiPanel").hidden = !isAi;
+  localStorage.setItem("pi-oj-side-panel", panel);
+}
+
+$("testTab").addEventListener("click", () => switchSidePanel("test"));
+$("aiTab").addEventListener("click", () => switchSidePanel("ai"));
 $("language").addEventListener("change", (event) => {
   const previous = event.target.value === "cpp" ? "py" : "cpp";
   saved[previous] = getCode();
@@ -451,6 +564,9 @@ $("language").addEventListener("change", (event) => {
   clearDiagnostics();
 });
 $("testSource").addEventListener("change", (event) => switchTestSource(event.target.value));
+$("problemId").addEventListener("input", (event) => {
+  localStorage.setItem("pi-oj-problem-id", event.target.value.trim());
+});
 $("fetchTests").addEventListener("click", fetchSelectedTests);
 $("input").addEventListener("input", saveActiveTest);
 $("expected").addEventListener("input", saveActiveTest);
@@ -474,6 +590,9 @@ $("code").addEventListener("keydown", (event) => {
   }
 });
 $("run").addEventListener("click", () => execute("run"));
+$("aiHint").addEventListener("click", () => askAi("hint"));
+$("aiDebug").addEventListener("click", () => askAi("debug"));
+$("aiTranslate").addEventListener("click", () => askAi("translate"));
 $("uva").addEventListener("click", () => execute("uva"));
 $("vimToggle").addEventListener("click", () => setVimMode(!vimMode));
 $("pdfToggle").addEventListener("click", openProblemPdf);
@@ -488,6 +607,7 @@ initializeMonaco();
 const initialTestSource = localStorage.getItem("pi-oj-test-source") || "sample";
 $("testSource").value = testSourceLabels[initialTestSource] ? initialTestSource : "sample";
 switchTestSource($("testSource").value, false);
+switchSidePanel(localStorage.getItem("pi-oj-side-panel") === "ai" ? "ai" : "test");
 
 fetch("/api/health").then((r) => r.json()).then(() => {
   $("health").textContent = "Online";

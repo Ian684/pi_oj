@@ -4,15 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pi OJ</title>
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=13">
 </head>
 <body>
   <header>
     <div><strong>Pi OJ</strong><span>Raspberry Pi Online Judge</span></div>
     <div class="header-actions">
-      <span id="health" class="pill">連線中</span>
+      <span id="health" class="pill">檢查中</span>
       <button id="themeToggle" class="theme-toggle" type="button" aria-label="切換深色模式">
-        <span id="themeIcon" aria-hidden="true">●</span>
+        <span id="themeIcon" aria-hidden="true">?</span>
         <span id="themeLabel">深色</span>
       </button>
     </div>
@@ -27,10 +27,10 @@
             <option value="py">Python 3</option>
           </select>
         </label>
-        <label>UVA 題號 <input id="problemId" inputmode="numeric" maxlength="5" placeholder="100–1800 / 10000–13400"></label>
+        <label>UVA 題號 <input id="problemId" inputmode="numeric" maxlength="5" placeholder="100-1800 / 10000-13400"></label>
         <button id="vimToggle" class="vim-toggle" type="button" aria-pressed="false" disabled>Vim OFF</button>
         <button id="pdfToggle" type="button">題目 PDF</button>
-        <button id="run" class="primary">▶ 執行測試</button>
+        <button id="run" class="primary">? 執行測試</button>
         <button id="uva">提交 UVA</button>
       </div>
       <label class="editor-label">程式碼</label>
@@ -40,39 +40,62 @@
     </section>
 
     <aside>
-      <div class="source-bar">
-        <label>測資來源
-          <select id="testSource">
-            <option value="sample">題目範例</option>
-            <option value="udebug">uDebug（開啟）</option>
-            <option value="custom">自訂測資</option>
-          </select>
-        </label>
-        <button id="fetchTests" type="button">↓ 載入</button>
-        <button id="openUdebug" type="button" hidden>↗ 開啟 uDebug</button>
+      <div class="side-tabs" role="tablist" aria-label="右側面板">
+        <button id="testTab" class="side-tab active" type="button" role="tab" aria-selected="true" aria-controls="testPanel">測試</button>
+        <button id="aiTab" class="side-tab" type="button" role="tab" aria-selected="false" aria-controls="aiPanel">AI 助教</button>
       </div>
-      <div class="panel">
-        <label id="inputLabel" for="input">題目範例輸入</label>
-        <textarea id="input" placeholder="stdin"></textarea>
-      </div>
-      <div class="panel">
-        <label id="expectedLabel" for="expected">題目範例輸出（留空時只執行）</label>
-        <textarea id="expected" placeholder="expected stdout"></textarea>
-      </div>
-      <div class="panel result-panel">
-        <div class="result-title"><span>執行結果</span><span id="verdict" class="pill neutral">尚未執行</span></div>
-        <div id="resultMeta" class="result-meta" hidden>
-          <div><span>來源</span><strong id="resultSource">—</strong></div>
-          <div><span>Submission ID</span><strong id="resultId">—</strong></div>
-          <div><span>判題結果</span><strong id="resultVerdict">—</strong></div>
-          <div><span>執行時間</span><strong id="resultTime">—</strong></div>
+
+      <section id="testPanel" class="side-panel active" role="tabpanel" aria-labelledby="testTab">
+        <div class="source-bar">
+          <label>測資來源
+            <select id="testSource">
+              <option value="sample">題目範例</option>
+              <option value="udebug">uDebug（開啟）</option>
+              <option value="ai">AI 測資</option>
+              <option value="custom">自訂測資</option>
+            </select>
+          </label>
+          <button id="fetchTests" type="button">載入</button>
+          <button id="openUdebug" type="button" hidden>開啟 uDebug</button>
         </div>
-        <pre id="output">等待程式執行…</pre>
-      </div>
+
+        <div class="panel">
+          <label id="inputLabel" for="input">題目範例輸入</label>
+          <textarea id="input" placeholder="stdin"></textarea>
+        </div>
+        <div class="panel">
+          <label id="expectedLabel" for="expected">題目範例輸出（空白時只執行）</label>
+          <textarea id="expected" placeholder="expected stdout"></textarea>
+        </div>
+        <div class="panel result-panel">
+          <div class="result-title"><span>執行結果</span><span id="verdict" class="pill neutral">尚未執行</span></div>
+          <div id="resultMeta" class="result-meta" hidden>
+            <div><span>來源</span><strong id="resultSource">?</strong></div>
+            <div><span>Submission ID</span><strong id="resultId">?</strong></div>
+            <div><span>判題結果</span><strong id="resultVerdict">?</strong></div>
+            <div><span>執行時間</span><strong id="resultTime">?</strong></div>
+          </div>
+          <pre id="output">執行程式後結果會顯示在這裡</pre>
+        </div>
+      </section>
+
+      <section id="aiPanel" class="side-panel ai-panel" role="tabpanel" aria-labelledby="aiTab" hidden>
+        <div class="ai-header">
+          <label for="aiQuestion">AI 助教</label>
+          <div class="ai-actions">
+            <button id="aiHint" type="button">提示</button>
+            <button id="aiDebug" type="button">除錯</button>
+            <button id="aiTranslate" type="button">翻譯</button>
+          </div>
+        </div>
+        <textarea id="aiQuestion" placeholder="例如：提示我這題要用什麼演算法、為什麼我第 3 筆輸出錯、翻譯題意或要求隨機測資"></textarea>
+        <pre id="aiOutput" class="ai-output">AI 回答會顯示在這裡</pre>
+      </section>
+
       <div id="pdfPane" class="pdf-pane" hidden>
         <div class="pdf-toolbar">
           <strong id="pdfTitle">UVA 題目 PDF</strong>
-          <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">另開頁面</a>
+          <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">另開視窗</a>
           <button id="closePdf" type="button">關閉</button>
         </div>
         <iframe id="problemPdf" title="UVA 題目 PDF"></iframe>
@@ -82,7 +105,7 @@
 
   <div id="toast" role="status"></div>
   <script src="/static/vendor/monaco/vs/loader.js?v=0.55.1"></script>
-  <script src="/static/app.js?v=15"></script>
+  <script src="/static/app.js?v=28"></script>
 </body>
 </html>
 

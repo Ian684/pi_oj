@@ -41,6 +41,13 @@ services:
       UVA_LOGIN_MODE: ${UVA_LOGIN_MODE:-browser}
       UVA_CPP_LANGUAGE_ID: ${UVA_CPP_LANGUAGE_ID:-5}
       UVA_PY_LANGUAGE_ID: ${UVA_PY_LANGUAGE_ID:-6}
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-900}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_MAX_OUTPUT_TOKENS: ${GEMINI_MAX_OUTPUT_TOKENS:-900}
     volumes:
       - ./backend:/app
       - /var/run/docker.sock:/var/run/docker.sock

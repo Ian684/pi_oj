@@ -46,6 +46,46 @@ http://樹莓派IP:8000
 docker compose logs -f worker
 ```
 
+## AI helper
+
+Pi OJ can call an AI tutor to provide hints or debugging guidance. The API key stays on the worker side and is never sent to the browser.
+
+Choose one provider in `.env`.
+
+Gemini, default and useful for free-tier testing:
+
+```dotenv
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_MAX_OUTPUT_TOKENS=900
+```
+
+OpenAI:
+
+```dotenv
+AI_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MAX_OUTPUT_TOKENS=900
+```
+
+Then rebuild/restart the worker and web image after changing these files:
+
+```bash
+docker compose build web worker
+docker compose up -d web worker
+```
+
+Buttons in the UI:
+
+- `AI 提示`: answers the optional `AI 想問什麼` question with algorithmic hints without requiring a previous run.
+- `AI 除錯`: sends the optional `AI 想問什麼` question plus latest stdout/error/verdict with your code to help explain WA/CE/RE/TLE.
+
+- `AI Translate`: downloads the UVA PDF for the required problem number and translates the problem statement into Traditional Chinese.
+- `AI 測資` test source: downloads the UVA PDF, asks the AI for one combined stdin / expected stdout pair, and applies it directly to the local input/output boxes.
+
+The AI prompt asks the tutor not to provide a complete accepted solution.
 ## ngrok login gate
 
 The web service is bound to `127.0.0.1:8000` in `docker-compose.yml`, so it is not exposed directly on the LAN/public network. To share it through ngrok with a login gate, copy the example policy:
