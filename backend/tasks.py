@@ -174,6 +174,42 @@ Problem statement extracted from the UVA PDF:
 ```
 """
 
+    if mode == "expected":
+        return f"""You are an Online Judge output oracle. Use the UVA problem statement to compute the exact expected stdout for the user's provided stdin.
+
+Task:
+- Answer in Traditional Chinese.
+- DO NOT create new input. Use the provided stdin exactly as-is.
+- Compute the exact expected stdout for that stdin according to the UVA problem statement.
+- Do not provide a full accepted solution or code.
+- If the stdin is invalid for the problem, explain the issue instead of inventing output.
+- If you cannot confidently compute the output, say so clearly instead of guessing.
+
+Required output format. Put this fenced block first, before any explanation:
+expected stdout:
+```text
+...
+```
+
+After the block, add a short Traditional Chinese note only if useful.
+
+UVA problem: {problem_id}
+User-provided stdin:
+```text
+{truncate_context(input_data, 20_000) or "(empty)"}
+```
+
+User request:
+```text
+{truncate_context(question, 4_000) or "?????? stdin ??????"}
+```
+
+Problem statement extracted from the UVA PDF:
+```text
+{truncate_context(problem_statement, 70_000)}
+```
+"""
+
     if mode == "tests":
         return f"""You are an Online Judge test-data assistant. Use the UVA problem statement to create local test cases.
 

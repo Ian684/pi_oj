@@ -49,8 +49,8 @@ class AiHelpRequest(BaseModel):
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, value: str) -> str:
-        if value not in {"hint", "debug", "translate", "tests"}:
-            raise ValueError("mode must be hint, debug, translate, or tests")
+        if value not in {"hint", "debug", "translate", "tests", "expected"}:
+            raise ValueError("mode must be hint, debug, translate, tests, or expected")
         return value
 
     @field_validator("problem_id")

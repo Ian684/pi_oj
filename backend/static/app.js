@@ -66,8 +66,8 @@ function switchTestSource(source, saveCurrent = true) {
   $("expected").value = savedTest.expected || "";
   $("inputLabel").textContent = testSourceLabels[source][0];
   $("expectedLabel").textContent = testSourceLabels[source][1];
-  $("fetchTests").hidden = !["sample", "ai"].includes(source);
-  $("fetchTests").textContent = source === "ai" ? "AI 產生" : "載入";
+  $("fetchTests").hidden = !["sample", "ai", "custom"].includes(source);
+  $("fetchTests").textContent = source === "ai" ? "AI 產生" : source === "custom" ? "AI 算輸出" : "載入";
   $("openUdebug").hidden = source !== "udebug";
   localStorage.setItem("pi-oj-test-source", source);
 }
@@ -79,12 +79,12 @@ async function fetchSelectedTests() {
     toast("請先輸入合法的 UVA 題號");
     return;
   }
-  if (!["sample", "ai"].includes(source)) return;
+  if (!["sample", "ai", "custom"].includes(source)) return;
 
   const button = $("fetchTests");
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = source === "ai" ? "AI 產生中…" : "載入中…";
+  button.textContent = source === "ai" ? "AI 產生中…" : source === "custom" ? "AI 計算中…" : "載入中…";
   try {
     let result;
     if (source === "sample") {
@@ -96,7 +96,7 @@ async function fetchSelectedTests() {
       if (!result || result.status !== "FETCHED") {
         throw new Error(result?.error_log || "測資載入失敗");
       }
-    } else {
+    } else if (source === "ai") {
       switchSidePanel("ai");
       setAiOutput("AI 助教正在讀取 UVA PDF，並產生可套用的 input/output 測資…");
       const aiResult = await requestAi("tests");
@@ -113,6 +113,26 @@ async function fetchSelectedTests() {
         expected_output: parsed.expected,
         message: "已套用 AI 產生的測資",
       };
+    } else {
+      if (!$("input").value.trim()) {
+        throw new Error("請先在自訂測資輸入 stdin，再請 AI 計算輸出");
+      }
+      switchSidePanel("ai");
+      setAiOutput("AI 助教正在根據你的自訂 stdin 計算 expected stdout…");
+      const aiResult = await requestAi("expected");
+      showAiResult(aiResult);
+      const expected = parseAiExpectedOutput(aiResult.message || "");
+      if (expected === null) {
+        throw new Error("AI 回答裡找不到 expected stdout 區塊");
+      }
+      switchSidePanel("test");
+      result = {
+        status: "FETCHED",
+        source,
+        input_data: $("input").value,
+        expected_output: expected,
+        message: "已根據自訂輸入填入 AI 計算的輸出",
+      };
     }
 
     savedTests[source] = {
@@ -121,13 +141,13 @@ async function fetchSelectedTests() {
     };
     localStorage.setItem("pi-oj-tests", JSON.stringify(savedTests));
     if (activeTestSource === source) {
-      $("input").value = result.input_data;
+      if (source !== "custom") $("input").value = result.input_data;
       $("expected").value = result.expected_output;
     }
     toast(result.message || "測資已載入");
   } catch (error) {
     toast(error.message);
-    if (source === "ai") setAiOutput(error.message, true);
+    if (["ai", "custom"].includes(source)) setAiOutput(error.message, true);
   } finally {
     button.disabled = false;
     button.textContent = originalText;
@@ -447,6 +467,13 @@ function parseAiGeneratedTest(message) {
     input: inputMatch[1].replace(/\n$/, ""),
     expected: expectedMatch[1].replace(/\n$/, ""),
   };
+}
+
+function parseAiExpectedOutput(message) {
+  const fencePattern = new RegExp('(?:^|\\n)\\s*(?:expected\\s+stdout|expected\\s+output|stdout|output)\\s*:\\s*```(?:text)?\\s*\\n([\\s\\S]*?)```', 'i');
+  const expectedMatch = message.match(fencePattern);
+  if (!expectedMatch) return null;
+  return expectedMatch[1].replace(/\n$/, "");
 }
 
 async function requestAi(mode) {
