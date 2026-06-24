@@ -6,11 +6,15 @@ let vimMode = null;
 let currentPdfObjectUrl = null;
 let lastSubmittedExpectedOutput = "";
 let lastRunResult = null;
+let monacoLoaderSource = "local";
+
+const MONACO_VERSION = "0.55.1";
+const MONACO_VIM_VERSION = "0.4.4";
 
 function applyTheme(theme) {
   root.dataset.theme = theme;
   const dark = theme === "dark";
-  $("themeIcon").textContent = dark ? "○" : "●";
+  $("themeIcon").textContent = dark ? "☼" : "☾";
   $("themeLabel").textContent = dark ? "淺色" : "深色";
   $("themeToggle").setAttribute("aria-label", dark ? "切換淺色模式" : "切換深色模式");
   if (codeEditor && window.monaco) monaco.editor.setTheme(dark ? "vs-dark" : "vs");
@@ -32,10 +36,11 @@ let activeTestSource = "sample";
 
 const testSourceLabels = {
   sample: ["題目範例輸入", "題目範例輸出（空白時只執行）"],
-  udebug: ["uDebug 輸入（手動貼上）", "uDebug 輸出（手動貼上）"],
-  custom: ["自訂測試輸入", "自訂答案輸出（空白時只執行）"],
-  ai: ["AI 測資輸入", "AI 測資標準輸出"],
+  udebug: ["uDebug 輸入（請手動貼上）", "uDebug 輸出（請手動貼上）"],
+  custom: ["自訂測資輸入", "自訂標準輸出（空白時只執行）"],
+  ai: ["AI 測資輸入", "AI 測資預期輸出"],
 };
+
 function getCode() {
   return codeEditor ? codeEditor.getValue() : $("code").value;
 }
@@ -44,8 +49,6 @@ function setCode(value) {
   if (codeEditor) codeEditor.setValue(value);
   else $("code").value = value;
 }
-
-
 
 function saveActiveTest() {
   savedTests[activeTestSource] = {
@@ -69,8 +72,6 @@ function switchTestSource(source, saveCurrent = true) {
   localStorage.setItem("pi-oj-test-source", source);
 }
 
-
-
 async function fetchSelectedTests() {
   const problemId = $("problemId").value;
   const source = activeTestSource;
@@ -83,7 +84,7 @@ async function fetchSelectedTests() {
   const button = $("fetchTests");
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = source === "ai" ? "AI 產生中..." : "載入中...";
+  button.textContent = source === "ai" ? "AI 產生中…" : "載入中…";
   try {
     let result;
     if (source === "sample") {
@@ -97,12 +98,12 @@ async function fetchSelectedTests() {
       }
     } else {
       switchSidePanel("ai");
-      setAiOutput("AI 助教正在讀取 UVA PDF 並產生可套用的 input/output 測資...");
+      setAiOutput("AI 助教正在讀取 UVA PDF，並產生可套用的 input/output 測資…");
       const aiResult = await requestAi("tests");
       showAiResult(aiResult);
       const parsed = parseAiGeneratedTest(aiResult.message || "");
       if (!parsed) {
-        throw new Error("AI 回覆中找不到可套用的 stdin / expected stdout 區塊");
+        throw new Error("AI 回答裡找不到完整的 stdin / expected stdout 區塊");
       }
       switchSidePanel("test");
       result = {
@@ -136,7 +137,7 @@ async function fetchSelectedTests() {
 async function openProblemPdf() {
   const problemId = $("problemId").value;
   if (!validUvaProblemId(problemId)) {
-    toast("請先輸入有效的 UVA 題號");
+    toast("請先輸入合法的 UVA 題號");
     return;
   }
 
@@ -181,26 +182,82 @@ function toast(message) {
   setTimeout(() => $("toast").classList.remove("show"), 3200);
 }
 
-function initializeMonaco() {
-  const useFallback = () => {
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve(src);
+    script.onerror = () => reject(new Error(`無法載入 ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function resourceExists(url) {
+  try {
+    const response = await fetch(url, {method: "HEAD", cache: "no-store"});
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureMonacoLoader() {
+  if (typeof window.require === "function") return "existing";
+  const candidates = [
+    {src: `/static/vendor/monaco/vs/loader.js?v=${MONACO_VERSION}`, source: "local"},
+    {src: `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs/loader.js`, source: "cdn"},
+  ];
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      await loadScript(candidate.src);
+      if (typeof window.require === "function") {
+        monacoLoaderSource = candidate.source;
+        return candidate.source;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Monaco loader 載入失敗");
+}
+
+async function initializeMonaco() {
+  const useFallback = (message = "Monaco 載入失敗，已切換成簡易編輯器") => {
     document.body.classList.add("monaco-failed");
-    toast("Monaco 載入失敗，已切換為基本編輯器");
+    toast(message);
   };
-  if (typeof window.require !== "function") {
+
+  try {
+    await ensureMonacoLoader();
+  } catch (error) {
+    console.error("Monaco loader failed", error);
     useFallback();
     return;
   }
+
+  const useCdn = monacoLoaderSource === "cdn";
+  const vsPath = useCdn
+    ? `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`
+    : "/static/vendor/monaco/vs";
+  const localVimOk = !useCdn && await resourceExists("/static/vendor/monaco-vim.js");
+  const vimPath = localVimOk
+    ? "/static/vendor/monaco-vim"
+    : `https://cdn.jsdelivr.net/npm/monaco-vim@${MONACO_VIM_VERSION}/dist/monaco-vim.umd`;
+
   window.require.config({paths: {
-    vs: "/static/vendor/monaco/vs",
-    "monaco-vim": "/static/vendor/monaco-vim",
+    vs: vsPath,
+    "monaco-vim": vimPath,
   }});
+
   window.require([
     "vs/editor/editor.main",
     "vs/basic-languages/monaco.contribution",
   ], () => {
     codeEditor = monaco.editor.create($("editor"), {
       value: $("code").value,
-      language: "cpp",
+      language: $("language").value === "cpp" ? "cpp" : "python",
       theme: root.dataset.theme === "dark" ? "vs-dark" : "vs",
       automaticLayout: true,
       fontFamily: '"Cascadia Code", "SFMono-Regular", Consolas, monospace',
@@ -225,7 +282,7 @@ function initializeMonaco() {
       saved[$("language").value] = codeEditor.getValue();
       localStorage.setItem("pi-oj-code", JSON.stringify(saved));
     });
-    // monaco-vim 0.4.4 的 AMD bundle 使用 ESM 套件名稱；將它指向已載入的 editor.main API。
+
     if (typeof window.define === "function") {
       window.define(
         "monaco-editor/esm/vs/editor/editor.api",
@@ -233,6 +290,7 @@ function initializeMonaco() {
         (editorApi) => editorApi,
       );
     }
+
     window.require(["monaco-vim"], (MonacoVim) => {
       monacoVimApi = MonacoVim;
       $("vimToggle").disabled = false;
@@ -240,6 +298,7 @@ function initializeMonaco() {
     }, (error) => {
       console.error("monaco-vim initialization failed", error);
       $("vimToggle").disabled = true;
+      toast("Vim 模式載入失敗，編輯器仍可正常使用");
     });
   }, (error) => {
     console.error("Monaco initialization failed", error);
@@ -355,7 +414,7 @@ function showResult(result) {
   const localSourceNames = {sample: "題目範例", udebug: "uDebug", ai: "AI 測資", custom: "自訂測資"};
   $("resultSource").textContent = isUva
     ? `UVA ${result.problem_id || ""}`.trim()
-    : `本機・${localSourceNames[activeTestSource]}`;
+    : `本機 — ${localSourceNames[activeTestSource]}`;
   $("resultId").textContent = result.uva_submission_id || result.submission_id || "—";
   $("resultVerdict").textContent = result.verdict || result.status || "—";
   $("resultTime").textContent = result.cpu_time || "—";
@@ -408,7 +467,7 @@ async function requestAi(mode) {
 }
 
 function showAiResult(result) {
-  const aiModeNames = {hint: "AI・提示", debug: "AI・除錯", translate: "AI・翻譯", tests: "AI・測資"};
+  const aiModeNames = {hint: "AI 提示", debug: "AI 除錯", translate: "AI 翻譯", tests: "AI 測資"};
   const title = aiModeNames[result.mode] || "AI";
   const meta = [result.provider, result.model].filter(Boolean).join(" / ");
   const parts = [`${title}${meta ? ` (${meta})` : ""}`];
@@ -426,11 +485,11 @@ async function askAi(mode) {
   const button = buttons[mode] || $("aiHint");
   button.disabled = true;
   const waitingMessages = {
-    translate: "AI 助教正在讀取 UVA PDF 並翻譯題目...",
-    hint: "AI 助教正在閱讀題號與程式碼...",
-    debug: "AI 助教正在閱讀測試結果與程式碼...",
+    translate: "AI 助教正在讀取 UVA PDF 並翻譯題目…",
+    hint: "AI 助教正在閱讀題號與程式碼…",
+    debug: "AI 助教正在閱讀測試結果與程式碼…",
   };
-  setAiOutput(waitingMessages[mode] || "AI 助教正在思考...");
+  setAiOutput(waitingMessages[mode] || "AI 助教正在思考…");
 
   try {
     switchSidePanel("ai");
@@ -462,7 +521,7 @@ function renderWrongAnswerDiff(stdout, expectedOutput, message = "") {
 
   const title = document.createElement("div");
   title.className = "diff-title";
-  title.textContent = "Wrong Answer: standard output differs from your output";
+  title.textContent = "Wrong Answer — standard output differs from your output";
   output.appendChild(title);
 
   const expectedLines = normalizeDiffText(expectedOutput).split("\n");
@@ -518,12 +577,11 @@ async function execute(kind) {
         input_data: $("input").value,
         expected_output: $("expected").value,
       })});
-
     } else {
       if (!validUvaProblemId($("problemId").value)) {
-        throw new Error("UVA 題號必須介於 100–1800 或 10000–13400");
+        throw new Error("UVA 題號範圍需為 100–1800 或 10000–13400");
       }
-      if (!confirm(`確定要把目前程式提交到 UVA ${$("problemId").value}？`)) return;
+      if (!confirm(`確定要提交目前程式碼到 UVA ${$("problemId").value}？`)) return;
       response = await request("/api/uva/submit", {method: "POST", body: JSON.stringify({
         problem_id: $("problemId").value,
         language: $("language").value,

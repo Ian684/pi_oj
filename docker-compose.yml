@@ -19,6 +19,12 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend/main.py:/app/main.py
+      - ./backend/tasks.py:/app/tasks.py
+      - ./backend/static/index.html:/app/static/index.html
+      - ./backend/static/app.js:/app/static/app.js
+      - ./backend/static/style.css:/app/static/style.css
     depends_on:
       - redis
 
@@ -27,7 +33,7 @@ services:
       context: ./backend
       target: worker
     container_name: oj_celery_worker
-    # Docker socket 本身等同主機 root 權限；worker 必須能存取它才能建立 judge 容器。
+    # Worker needs Docker socket access to launch judge containers.
     user: "0:0"
     restart: unless-stopped
     command: celery -A tasks worker --loglevel=info --concurrency=1
@@ -49,7 +55,7 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
       GEMINI_MAX_OUTPUT_TOKENS: ${GEMINI_MAX_OUTPUT_TOKENS:-900}
     volumes:
-      - ./backend:/app
+      - ./backend/tasks.py:/app/tasks.py
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/sandboxes:/sandboxes
     depends_on:

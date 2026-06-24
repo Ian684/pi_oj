@@ -143,8 +143,14 @@ button.primary:hover { background: var(--accent-hover); color: #fff; }
   background: var(--surface);
 }
 
+.editor-fallback { display: none; }
 .monaco-ready .editor-fallback { display: none; }
 .monaco-failed #editor { display: none; }
+.monaco-failed .editor-fallback {
+  display: block;
+  flex: 1;
+  min-height: 0;
+}
 
 .vim-toggle[aria-pressed="true"] {
   border-color: var(--accent);

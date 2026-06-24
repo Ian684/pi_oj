@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pi OJ</title>
-  <link rel="stylesheet" href="/static/style.css?v=13">
+  <link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
   <header>
@@ -12,7 +12,7 @@
     <div class="header-actions">
       <span id="health" class="pill">檢查中</span>
       <button id="themeToggle" class="theme-toggle" type="button" aria-label="切換深色模式">
-        <span id="themeIcon" aria-hidden="true">?</span>
+        <span id="themeIcon" aria-hidden="true">☾</span>
         <span id="themeLabel">深色</span>
       </button>
     </div>
@@ -30,8 +30,8 @@
         <label>UVA 題號 <input id="problemId" inputmode="numeric" maxlength="5" placeholder="100-1800 / 10000-13400"></label>
         <button id="vimToggle" class="vim-toggle" type="button" aria-pressed="false" disabled>Vim OFF</button>
         <button id="pdfToggle" type="button">題目 PDF</button>
-        <button id="run" class="primary">? 執行測試</button>
-        <button id="uva">提交 UVA</button>
+        <button id="run" class="primary" type="button">▶ 執行測試</button>
+        <button id="uva" type="button">↑ 提交 UVA</button>
       </div>
       <label class="editor-label">程式碼</label>
       <div id="editor" aria-label="程式碼編輯器"></div>
@@ -40,7 +40,7 @@
     </section>
 
     <aside>
-      <div class="side-tabs" role="tablist" aria-label="右側面板">
+      <div class="side-tabs" role="tablist" aria-label="側邊面板">
         <button id="testTab" class="side-tab active" type="button" role="tab" aria-selected="true" aria-controls="testPanel">測試</button>
         <button id="aiTab" class="side-tab" type="button" role="tab" aria-selected="false" aria-controls="aiPanel">AI 助教</button>
       </div>
@@ -50,7 +50,7 @@
           <label>測資來源
             <select id="testSource">
               <option value="sample">題目範例</option>
-              <option value="udebug">uDebug（開啟）</option>
+              <option value="udebug">uDebug（若有）</option>
               <option value="ai">AI 測資</option>
               <option value="custom">自訂測資</option>
             </select>
@@ -70,10 +70,10 @@
         <div class="panel result-panel">
           <div class="result-title"><span>執行結果</span><span id="verdict" class="pill neutral">尚未執行</span></div>
           <div id="resultMeta" class="result-meta" hidden>
-            <div><span>來源</span><strong id="resultSource">?</strong></div>
-            <div><span>Submission ID</span><strong id="resultId">?</strong></div>
-            <div><span>判題結果</span><strong id="resultVerdict">?</strong></div>
-            <div><span>執行時間</span><strong id="resultTime">?</strong></div>
+            <div><span>來源</span><strong id="resultSource">-</strong></div>
+            <div><span>Submission ID</span><strong id="resultId">-</strong></div>
+            <div><span>判題結果</span><strong id="resultVerdict">-</strong></div>
+            <div><span>執行時間</span><strong id="resultTime">-</strong></div>
           </div>
           <pre id="output">執行程式後結果會顯示在這裡</pre>
         </div>
@@ -95,7 +95,7 @@
       <div id="pdfPane" class="pdf-pane" hidden>
         <div class="pdf-toolbar">
           <strong id="pdfTitle">UVA 題目 PDF</strong>
-          <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">另開視窗</a>
+          <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">開新分頁</a>
           <button id="closePdf" type="button">關閉</button>
         </div>
         <iframe id="problemPdf" title="UVA 題目 PDF"></iframe>
@@ -104,8 +104,7 @@
   </main>
 
   <div id="toast" role="status"></div>
-  <script src="/static/vendor/monaco/vs/loader.js?v=0.55.1"></script>
-  <script src="/static/app.js?v=28"></script>
+<script src="/static/app.js?v=30"></script>
 </body>
 </html>
 
