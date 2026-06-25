@@ -4,11 +4,11 @@ from uuid import uuid4
 import requests
 from celery.result import AsyncResult
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from tasks import ask_ai_helper_task, fetch_test_data_task, judge_submission_task, submit_uva_task, worker
+from tasks import ask_ai_helper_task, fetch_problem_statement_html, fetch_test_data_task, judge_submission_task, submit_codeforces_task, submit_uva_task, worker
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -27,6 +27,28 @@ def normalize_uva_problem_id(value: str) -> str:
     return str(number)
 
 
+def normalize_judge(value: str) -> str:
+    lowered = (value or "uva").strip().lower()
+    if lowered not in {"uva", "codeforces"}:
+        raise ValueError("judge must be uva or codeforces")
+    return lowered
+
+
+def normalize_codeforces_problem_id(value: str) -> str:
+    text = (value or "").strip().upper().replace("-", "/")
+    match = __import__("re").fullmatch(r"(\d{1,6})\s*/?\s*([A-Z][0-9A-Z]?)", text)
+    if not match:
+        raise ValueError("Codeforces problem id must look like 1843A or 1843/A")
+    return f"{match.group(1)}{match.group(2)}"
+
+
+def normalize_problem_id_for_judge(judge: str, value: str) -> str:
+    judge = normalize_judge(judge)
+    if judge == "uva":
+        return normalize_uva_problem_id(value)
+    return normalize_codeforces_problem_id(value)
+
+
 class RunRequest(BaseModel):
     code: str = Field(min_length=1, max_length=100_000)
     language: str
@@ -36,7 +58,8 @@ class RunRequest(BaseModel):
 
 class AiHelpRequest(BaseModel):
     mode: str
-    problem_id: str = Field(pattern=r"^\d{1,6}$")
+    judge: str = Field(default="uva")
+    problem_id: str = Field(min_length=1, max_length=32)
     language: str
     code: str = Field(default="", max_length=100_000)
     input_data: str = Field(default="", max_length=100_000)
@@ -53,41 +76,53 @@ class AiHelpRequest(BaseModel):
             raise ValueError("mode must be hint, debug, translate, tests, or expected")
         return value
 
-    @field_validator("problem_id")
+    @field_validator("judge")
     @classmethod
-    def validate_problem_id(cls, value: str) -> str:
-        return normalize_uva_problem_id(value)
+    def validate_judge(cls, value: str) -> str:
+        return normalize_judge(value)
+
+    def model_post_init(self, __context) -> None:
+        self.problem_id = normalize_problem_id_for_judge(self.judge, self.problem_id)
+
 
 
 
 
 
 class UvaSubmitRequest(BaseModel):
-    problem_id: str = Field(pattern=r"^\d{1,6}$")
+    judge: str = Field(default="uva")
+    problem_id: str = Field(min_length=1, max_length=32)
     language: str
     code: str = Field(min_length=1, max_length=100_000)
 
-    @field_validator("problem_id")
+    @field_validator("judge")
     @classmethod
-    def validate_problem_id(cls, value: str) -> str:
-        return normalize_uva_problem_id(value)
+    def validate_judge(cls, value: str) -> str:
+        return normalize_judge(value)
+
+    def model_post_init(self, __context) -> None:
+        self.problem_id = normalize_problem_id_for_judge(self.judge, self.problem_id)
 
 
 class TestFetchRequest(BaseModel):
-    problem_id: str = Field(pattern=r"^\d{1,6}$")
+    judge: str = Field(default="uva")
+    problem_id: str = Field(min_length=1, max_length=32)
     source: str
 
-    @field_validator("problem_id")
+    @field_validator("judge")
     @classmethod
-    def validate_problem_id(cls, value: str) -> str:
-        return normalize_uva_problem_id(value)
+    def validate_judge(cls, value: str) -> str:
+        return normalize_judge(value)
 
     @field_validator("source")
     @classmethod
     def validate_source(cls, value: str) -> str:
-        if value != "sample":
-            raise ValueError("source 目前只支援 sample；uDebug 請使用開啟按鈕手動查看")
+        if value not in {"sample", "udebug"}:
+            raise ValueError("source currently supports sample or udebug")
         return value
+
+    def model_post_init(self, __context) -> None:
+        self.problem_id = normalize_problem_id_for_judge(self.judge, self.problem_id)
 
 
 def validate_language(language: str) -> None:
@@ -139,6 +174,19 @@ def problem_pdf(problem_id: str) -> Response:
     )
 
 
+@app.get("/api/problems/{judge}/{problem_id}/statement")
+def problem_statement(judge: str, problem_id: str) -> HTMLResponse:
+    try:
+        normalized_judge = normalize_judge(judge)
+        normalized_problem_id = normalize_problem_id_for_judge(normalized_judge, problem_id)
+        html = fetch_problem_statement_html(normalized_judge, normalized_problem_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"題目頁載入失敗：{exc}") from exc
+    return HTMLResponse(content=html, headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.post("/api/run", status_code=202)
 def run_code(payload: RunRequest) -> dict:
     validate_language(payload.language)
@@ -158,6 +206,7 @@ def ai_help(payload: AiHelpRequest) -> dict:
     validate_language(payload.language)
     task = ask_ai_helper_task.delay(
         mode=payload.mode,
+        judge=payload.judge,
         problem_id=payload.problem_id,
         language=payload.language,
         code=payload.code,
@@ -177,17 +226,24 @@ def ai_help(payload: AiHelpRequest) -> dict:
 @app.post("/api/uva/submit", status_code=202)
 def uva_submit(payload: UvaSubmitRequest) -> dict:
     validate_language(payload.language)
-    task = submit_uva_task.delay(
-        problem_id=payload.problem_id,
-        language=payload.language,
-        code=payload.code,
-    )
+    if payload.judge == "codeforces":
+        task = submit_codeforces_task.delay(
+            problem_id=payload.problem_id,
+            language=payload.language,
+            code=payload.code,
+        )
+    else:
+        task = submit_uva_task.delay(
+            problem_id=payload.problem_id,
+            language=payload.language,
+            code=payload.code,
+        )
     return {"task_id": task.id, "status": "QUEUED"}
 
 
 @app.post("/api/tests/fetch", status_code=202)
 def fetch_tests(payload: TestFetchRequest) -> dict:
-    task = fetch_test_data_task.delay(problem_id=payload.problem_id, source=payload.source)
+    task = fetch_test_data_task.delay(judge=payload.judge, problem_id=payload.problem_id, source=payload.source)
     return {"task_id": task.id, "status": "QUEUED"}
 
 

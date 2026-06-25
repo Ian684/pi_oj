@@ -30,15 +30,70 @@ const templates = {
 
 const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
 $("code").value = saved.cpp || templates.cpp;
-$("problemId").value = localStorage.getItem("pi-oj-problem-id") || "";
+$("judge").value = localStorage.getItem("pi-oj-judge") || "uva";
+$("problemId").value = localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
+updateJudgeUi();
 const savedTests = JSON.parse(localStorage.getItem("pi-oj-tests") || "{}");
 let activeTestSource = "sample";
 
+function getJudge() {
+  return $("judge")?.value || "uva";
+}
+
+function codeforcesProblemCode(problemId) {
+  const match = problemId.trim().toUpperCase().replace("-", "/").match(/^(\d{1,6})\s*\/?\s*([A-Z][0-9A-Z]?)$/);
+  return match ? `${match[1]}${match[2]}` : "";
+}
+
+function problemUrlForJudge(judge, problemId) {
+  if (judge === "codeforces") {
+    const match = problemId.trim().toUpperCase().replace("-", "/").match(/^(\d{1,6})\s*\/?\s*([A-Z][0-9A-Z]?)$/);
+    if (!match) return "";
+    return `https://codeforces.com/problemset/problem/${match[1]}/${match[2]}`;
+  }
+  return `/api/problems/${problemId}/pdf`;
+}
+
+function codeforcesSubmitUrl(problemId) {
+  const problemCode = codeforcesProblemCode(problemId);
+  return `https://codeforces.com/problemset/submit${problemCode ? `?submittedProblemCode=${encodeURIComponent(problemCode)}` : ""}`;
+}
+
+function validProblemId(value) {
+  const judge = getJudge();
+  if (judge === "codeforces") return /^(\d{1,6})\s*\/?\s*([A-Za-z][0-9A-Za-z]?)$/.test(value.trim());
+  return validUvaProblemId(value);
+}
+
+function syncTestSourceOptions() {
+  const allowUdebug = getJudge() === "uva";
+  const udebugOption = $("testSource").querySelector('option[value="udebug"]');
+  if (udebugOption) udebugOption.hidden = !allowUdebug;
+  if (!allowUdebug && $("testSource").value === "udebug") $("testSource").value = "sample";
+}
+
+function updateJudgeUi() {
+  const judge = getJudge();
+  const label = $("problemLabel");
+  if (judge === "codeforces") {
+    if (label) label.childNodes[0].textContent = "Codeforces \u984c\u865f ";
+    $("problemId").placeholder = "1843A";
+    $("pdfToggle").textContent = "\u984c\u76ee\u9801";
+    $("uva").textContent = "\u2191 \u63d0\u4ea4 Codeforces";
+  } else {
+    if (label) label.childNodes[0].textContent = "UVA \u984c\u865f ";
+    $("problemId").placeholder = "100-1800 / 10000-13400";
+    $("pdfToggle").textContent = "\u984c\u76ee PDF";
+    $("uva").textContent = "\u2191 \u63d0\u4ea4 UVA";
+  }
+  syncTestSourceOptions();
+}
+
 const testSourceLabels = {
-  sample: ["題目範例輸入", "題目範例輸出（空白時只執行）"],
-  udebug: ["uDebug 輸入（請手動貼上）", "uDebug 輸出（請手動貼上）"],
-  custom: ["自訂測資輸入", "自訂標準輸出（空白時只執行）"],
-  ai: ["AI 測資輸入", "AI 測資預期輸出"],
+  sample: ["\u984c\u76ee\u8f38\u5165", "\u984c\u76ee\u8f38\u51fa\uff08\u7a7a\u767d\u6642\u53ea\u57f7\u884c\uff09"],
+  udebug: ["uDebug \u8f38\u5165", "uDebug \u8f38\u51fa"],
+  custom: ["\u81ea\u8a02\u6e2c\u8cc7\u8f38\u5165", "\u81ea\u8a02\u6e2c\u8cc7\u8f38\u51fa\uff08\u7a7a\u767d\u6642\u53ea\u57f7\u884c\uff09"],
+  ai: ["AI \u6e2c\u8cc7\u8f38\u5165", "AI \u6e2c\u8cc7\u9810\u671f\u8f38\u51fa"],
 };
 
 function getCode() {
@@ -67,43 +122,50 @@ function switchTestSource(source, saveCurrent = true) {
   $("inputLabel").textContent = testSourceLabels[source][0];
   $("expectedLabel").textContent = testSourceLabels[source][1];
   $("fetchTests").hidden = !["sample", "ai", "custom"].includes(source);
-  $("fetchTests").textContent = source === "ai" ? "AI 產生" : source === "custom" ? "AI 算輸出" : "載入";
-  $("openUdebug").hidden = source !== "udebug";
+  $("fetchTests").textContent = source === "ai" ? "AI \u7522\u751f" : source === "custom" ? "AI \u7b97\u8f38\u51fa" : "\u8f09\u5165";
+  $("openUdebug").hidden = !(source === "udebug" && getJudge() === "uva");
   localStorage.setItem("pi-oj-test-source", source);
+}
+
+function invalidProblemMessage() {
+  return getJudge() === "codeforces"
+    ? "Codeforces \u984c\u865f\u683c\u5f0f\u9700\u50cf 1843A \u6216 1843/A"
+    : "UVA \u984c\u865f\u7bc4\u570d\u9700\u70ba 100\u20131800 \u6216 10000\u201313400";
 }
 
 async function fetchSelectedTests() {
   const problemId = $("problemId").value;
   const source = activeTestSource;
-  if (!validUvaProblemId(problemId)) {
-    toast("請先輸入合法的 UVA 題號");
+  if (!validProblemId(problemId)) {
+    toast(invalidProblemMessage());
     return;
   }
-  if (!["sample", "ai", "custom"].includes(source)) return;
+  if (!["sample", "udebug", "ai", "custom"].includes(source)) return;
 
   const button = $("fetchTests");
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = source === "ai" ? "AI 產生中…" : source === "custom" ? "AI 計算中…" : "載入中…";
+  button.textContent = source === "ai" ? "AI \u7522\u751f\u4e2d\u2026" : source === "custom" ? "AI \u8a08\u7b97\u4e2d\u2026" : "\u8f09\u5165\u4e2d\u2026";
   try {
     let result;
-    if (source === "sample") {
+    if (["sample", "udebug"].includes(source)) {
       const queued = await request("/api/tests/fetch", {
         method: "POST",
-        body: JSON.stringify({problem_id: problemId, source}),
+        body: JSON.stringify({judge: getJudge(), problem_id: problemId, source}),
       });
       result = await poll(queued.task_id);
       if (!result || result.status !== "FETCHED") {
-        throw new Error(result?.error_log || "測資載入失敗");
+        throw new Error(result?.error_log || "\u984c\u76ee\u6e2c\u8cc7\u8f09\u5165\u5931\u6557");
       }
     } else if (source === "ai") {
       switchSidePanel("ai");
-      setAiOutput("AI 助教正在讀取 UVA PDF，並產生可套用的 input/output 測資…");
+      const pageName = getJudge() === "codeforces" ? "Codeforces \u984c\u76ee\u9801" : "UVA PDF";
+      setAiOutput(`AI \u52a9\u6559\u6b63\u5728\u95b1\u8b80 ${pageName}\uff0c\u4e26\u7522\u751f input/output \u6e2c\u8cc7\u2026`);
       const aiResult = await requestAi("tests");
       showAiResult(aiResult);
       const parsed = parseAiGeneratedTest(aiResult.message || "");
       if (!parsed) {
-        throw new Error("AI 回答裡找不到完整的 stdin / expected stdout 區塊");
+        throw new Error("AI \u56de\u61c9\u4e2d\u627e\u4e0d\u5230\u5b8c\u6574\u7684 stdin / expected stdout \u5340\u584a");
       }
       switchSidePanel("test");
       result = {
@@ -111,19 +173,19 @@ async function fetchSelectedTests() {
         source,
         input_data: parsed.input,
         expected_output: parsed.expected,
-        message: "已套用 AI 產生的測資",
+        message: "\u5df2\u5957\u7528 AI \u7522\u751f\u7684\u6e2c\u8cc7",
       };
     } else {
       if (!$("input").value.trim()) {
-        throw new Error("請先在自訂測資輸入 stdin，再請 AI 計算輸出");
+        throw new Error("\u8acb\u5148\u5728\u81ea\u8a02\u6e2c\u8cc7\u8f38\u5165 stdin\uff0c\u518d\u8acb AI \u8a08\u7b97\u8f38\u51fa");
       }
       switchSidePanel("ai");
-      setAiOutput("AI 助教正在根據你的自訂 stdin 計算 expected stdout…");
+      setAiOutput("AI \u52a9\u6559\u6b63\u5728\u6839\u64da\u4f60\u7684\u81ea\u8a02 stdin \u8a08\u7b97 expected stdout\u2026");
       const aiResult = await requestAi("expected");
       showAiResult(aiResult);
       const expected = parseAiExpectedOutput(aiResult.message || "");
       if (expected === null) {
-        throw new Error("AI 回答裡找不到 expected stdout 區塊");
+        throw new Error("AI \u56de\u61c9\u4e2d\u627e\u4e0d\u5230 expected stdout \u5340\u584a");
       }
       switchSidePanel("test");
       result = {
@@ -131,7 +193,7 @@ async function fetchSelectedTests() {
         source,
         input_data: $("input").value,
         expected_output: expected,
-        message: "已根據自訂輸入填入 AI 計算的輸出",
+        message: "\u5df2\u4fdd\u7559\u4f60\u7684\u8f38\u5165\u4e26\u5957\u7528 AI \u8a08\u7b97\u7684\u8f38\u51fa",
       };
     }
 
@@ -144,7 +206,7 @@ async function fetchSelectedTests() {
       if (source !== "custom") $("input").value = result.input_data;
       $("expected").value = result.expected_output;
     }
-    toast(result.message || "測資已載入");
+    toast(result.message || "\u6e2c\u8cc7\u5df2\u5957\u7528");
   } catch (error) {
     toast(error.message);
     if (["ai", "custom"].includes(source)) setAiOutput(error.message, true);
@@ -156,28 +218,42 @@ async function fetchSelectedTests() {
 
 async function openProblemPdf() {
   const problemId = $("problemId").value;
-  if (!validUvaProblemId(problemId)) {
-    toast("請先輸入合法的 UVA 題號");
+  if (!validProblemId(problemId)) {
+    toast(invalidProblemMessage());
     return;
   }
 
   const button = $("pdfToggle");
-  const pdfUrl = `/api/problems/${problemId}/pdf`;
+  const judge = getJudge();
+  const statementId = problemId.trim().toUpperCase().replace(/[^0-9A-Z]/g, "");
+  const pdfUrl = judge === "codeforces" ? `/api/problems/codeforces/${statementId}/statement` : problemUrlForJudge(judge, problemId);
   button.disabled = true;
-  $("pdfTitle").textContent = `UVA ${problemId} 題目 PDF`;
-  $("openPdf").href = pdfUrl;
+  $("pdfTitle").textContent = `${judge === "codeforces" ? "Codeforces" : "UVA"} ${problemId} \u984c\u76ee`;
+  $("openPdf").href = problemUrlForJudge(judge, problemId) || pdfUrl;
   $("pdfPane").hidden = false;
   document.querySelector("main").classList.add("pdf-open");
   try {
+    if (judge === "codeforces") {
+      if (currentPdfObjectUrl) URL.revokeObjectURL(currentPdfObjectUrl);
+      currentPdfObjectUrl = null;
+      $("problemPdf").src = pdfUrl;
+      $("testSource").value = "sample";
+      switchTestSource("sample");
+      await fetchSelectedTests();
+      return;
+    }
     const response = await fetch(pdfUrl);
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || `PDF 載入失敗（HTTP ${response.status}）`);
+      throw new Error(detail.detail || `PDF \u8f09\u5165\u5931\u6557\uff08HTTP ${response.status}\uff09`);
     }
     const blob = await response.blob();
     if (currentPdfObjectUrl) URL.revokeObjectURL(currentPdfObjectUrl);
     currentPdfObjectUrl = URL.createObjectURL(blob);
     $("problemPdf").src = currentPdfObjectUrl;
+    $("testSource").value = "sample";
+    switchTestSource("sample");
+    await fetchSelectedTests();
   } catch (error) {
     closeProblemPdf();
     toast(error.message);
@@ -480,6 +556,7 @@ async function requestAi(mode) {
   const result = lastRunResult || {};
   const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({
     mode,
+    judge: getJudge(),
     problem_id: $("problemId").value,
     language: $("language").value,
     code: getCode(),
@@ -504,7 +581,7 @@ function showAiResult(result) {
 }
 
 async function askAi(mode) {
-  if (!validUvaProblemId($("problemId").value)) {
+  if (!validProblemId($("problemId").value)) {
     toast("請先輸入合法的 UVA 題號，AI 助教需要知道是哪一題");
     return;
   }
@@ -605,11 +682,26 @@ async function execute(kind) {
         expected_output: $("expected").value,
       })});
     } else {
-      if (!validUvaProblemId($("problemId").value)) {
-        throw new Error("UVA 題號範圍需為 100–1800 或 10000–13400");
+      if (!validProblemId($("problemId").value)) {
+        throw new Error(getJudge() === "codeforces" ? "Codeforces \u984c\u865f\u683c\u5f0f\u9700\u50cf 1843A \u6216 1843/A" : "UVA \u984c\u865f\u7bc4\u570d\u9700\u70ba 100\u20131800 \u6216 10000\u201313400");
       }
-      if (!confirm(`確定要提交目前程式碼到 UVA ${$("problemId").value}？`)) return;
+      if (getJudge() === "codeforces") {
+        if (!confirm(`Codeforces \u6703\u64cb\u4f3a\u670d\u5668\u81ea\u52d5\u767b\u5165\u3002\u8981\u8907\u88fd\u7a0b\u5f0f\u78bc\u4e26\u958b\u555f Codeforces \u63d0\u4ea4\u9801\u55ce\uff1f`)) return;
+        try {
+          await navigator.clipboard.writeText(getCode());
+          toast("\u5df2\u8907\u88fd\u7a0b\u5f0f\u78bc\uff0c\u8acb\u8cbc\u5230 Codeforces \u63d0\u4ea4\u9801");
+        } catch (copyError) {
+          toast("\u700f\u89bd\u5668\u4e0d\u5141\u8a31\u81ea\u52d5\u8907\u88fd\uff0c\u8acb\u624b\u52d5\u8907\u88fd\u7a0b\u5f0f\u78bc");
+        }
+        const problemCode = codeforcesProblemCode($("problemId").value);
+        window.open(codeforcesSubmitUrl($("problemId").value), "_blank", "noopener,noreferrer");
+        setVerdict("MANUAL");
+        $("output").textContent = `Codeforces Cloudflare \u6703\u963b\u64cb worker \u81ea\u52d5\u63d0\u4ea4\u3002\n\u5df2\u958b\u555f\u63d0\u4ea4\u9801${problemCode ? `\uff0c\u984c\u865f\uff1a${problemCode}` : ""}\u3002\n\u8acb\u8cbc\u4e0a\u525b\u8907\u88fd\u7684\u7a0b\u5f0f\u78bc\u4e26\u624b\u52d5\u63d0\u4ea4\u3002`;
+        return;
+      }
+      if (!confirm(`\u78ba\u5b9a\u8981\u63d0\u4ea4\u76ee\u524d\u7a0b\u5f0f\u78bc\u5230 UVA ${$("problemId").value}\uff1f`)) return;
       response = await request("/api/uva/submit", {method: "POST", body: JSON.stringify({
+        judge: getJudge(),
         problem_id: $("problemId").value,
         language: $("language").value,
         code: getCode(),
@@ -649,15 +741,21 @@ $("language").addEventListener("change", (event) => {
   clearDiagnostics();
 });
 $("testSource").addEventListener("change", (event) => switchTestSource(event.target.value));
+$("judge").addEventListener("change", () => {
+  localStorage.setItem("pi-oj-judge", getJudge());
+  $("problemId").value = localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
+  updateJudgeUi();
+  switchTestSource($("testSource").value);
+});
 $("problemId").addEventListener("input", (event) => {
-  localStorage.setItem("pi-oj-problem-id", event.target.value.trim());
+  localStorage.setItem(`pi-oj-problem-id-${getJudge()}`, event.target.value.trim());
 });
 $("fetchTests").addEventListener("click", fetchSelectedTests);
 $("input").addEventListener("input", saveActiveTest);
 $("expected").addEventListener("input", saveActiveTest);
 $("openUdebug").addEventListener("click", () => {
   const problemId = $("problemId").value;
-  if (!validUvaProblemId(problemId)) {
+  if (!validProblemId(problemId)) {
     toast("請先輸入合法的 UVA 題號");
     return;
   }
@@ -689,8 +787,9 @@ $("themeToggle").addEventListener("click", () => {
 });
 
 initializeMonaco();
-const initialTestSource = localStorage.getItem("pi-oj-test-source") || "sample";
+const initialTestSource = ["sample", "udebug", "ai", "custom"].includes(localStorage.getItem("pi-oj-test-source")) ? localStorage.getItem("pi-oj-test-source") : "sample";
 $("testSource").value = testSourceLabels[initialTestSource] ? initialTestSource : "sample";
+syncTestSourceOptions();
 switchTestSource($("testSource").value, false);
 switchSidePanel(localStorage.getItem("pi-oj-side-panel") === "ai" ? "ai" : "test");
 

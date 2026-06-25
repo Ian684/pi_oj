@@ -27,7 +27,13 @@
             <option value="py">Python 3</option>
           </select>
         </label>
-        <label>UVA 題號 <input id="problemId" inputmode="numeric" maxlength="5" placeholder="100-1800 / 10000-13400"></label>
+        <label>題庫
+          <select id="judge">
+            <option value="uva">UVA</option>
+            <option value="codeforces">Codeforces</option>
+          </select>
+        </label>
+        <label id="problemLabel">UVA 題號 <input id="problemId" inputmode="text" maxlength="32" placeholder="100-1800 / 10000-13400"></label>
         <button id="vimToggle" class="vim-toggle" type="button" aria-pressed="false" disabled>Vim OFF</button>
         <button id="pdfToggle" type="button">題目 PDF</button>
         <button id="run" class="primary" type="button">▶ 執行測試</button>
@@ -49,10 +55,10 @@
         <div class="source-bar">
           <label>測資來源
             <select id="testSource">
-              <option value="sample">題目範例</option>
-              <option value="udebug">uDebug（若有）</option>
-              <option value="ai">AI 測資</option>
-              <option value="custom">自訂測資</option>
+              <option value="sample">題目</option>
+              <option value="udebug">uDebug</option>
+              <option value="ai">AI</option>
+              <option value="custom">自訂</option>
             </select>
           </label>
           <button id="fetchTests" type="button">載入</button>
@@ -60,11 +66,11 @@
         </div>
 
         <div class="panel">
-          <label id="inputLabel" for="input">題目範例輸入</label>
+          <label id="inputLabel" for="input">題目輸入</label>
           <textarea id="input" placeholder="stdin"></textarea>
         </div>
         <div class="panel">
-          <label id="expectedLabel" for="expected">題目範例輸出（空白時只執行）</label>
+          <label id="expectedLabel" for="expected">題目輸出（空白時只執行）</label>
           <textarea id="expected" placeholder="expected stdout"></textarea>
         </div>
         <div class="panel result-panel">
@@ -94,17 +100,17 @@
 
       <div id="pdfPane" class="pdf-pane" hidden>
         <div class="pdf-toolbar">
-          <strong id="pdfTitle">UVA 題目 PDF</strong>
+          <strong id="pdfTitle">題目</strong>
           <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">開新分頁</a>
           <button id="closePdf" type="button">關閉</button>
         </div>
-        <iframe id="problemPdf" title="UVA 題目 PDF"></iframe>
+        <iframe id="problemPdf" title="題目頁"></iframe>
       </div>
     </aside>
   </main>
 
   <div id="toast" role="status"></div>
-<script src="/static/app.js?v=31"></script>
+<script src="/static/app.js?v=39"></script>
 </body>
 </html>
 

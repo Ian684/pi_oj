@@ -103,6 +103,150 @@ def download_uva_pdf_text(problem_number: int) -> tuple[str, str]:
     return extract_pdf_text("layout"), extract_pdf_text("plain")
 
 
+def parse_codeforces_problem_id(value: str) -> tuple[str, str]:
+    text = (value or "").strip().upper().replace("-", "/")
+    match = re.fullmatch(r"(\d{1,6})\s*/?\s*([A-Z][0-9A-Z]?)", text)
+    if not match:
+        raise ValueError("Codeforces problem id must look like 1843A or 1843/A")
+    return match.group(1), match.group(2)
+
+
+def codeforces_problem_url(problem_id: str) -> str:
+    contest_id, index = parse_codeforces_problem_id(problem_id)
+    return f"https://codeforces.com/problemset/problem/{contest_id}/{index}"
+
+
+def codeforces_pre_text(pre) -> str:
+    html = str(pre).replace("<br/>", "\n").replace("<br>", "\n").replace("<br />", "\n")
+    text = BeautifulSoup(html, "html.parser").get_text("\n")
+    lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def fetch_codeforces_problem_page(problem_id: str) -> BeautifulSoup:
+    url = codeforces_problem_url(problem_id)
+    response = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; Pi-OJ/1.0)"},
+        timeout=(5, 30),
+    )
+    response.raise_for_status()
+    return BeautifulSoup(response.text, "html.parser")
+
+
+def extract_codeforces_problem_statement(problem_id: str) -> str:
+    soup = fetch_codeforces_problem_page(problem_id)
+    statement = soup.select_one(".problem-statement")
+    if statement is None:
+        raise RuntimeError("Cannot find Codeforces problem statement")
+    for block in statement.select(".sample-tests, script, style"):
+        block.decompose()
+    title = statement.select_one(".title")
+    header = title.get_text(" ", strip=True) if title else f"Codeforces {problem_id}"
+    text = statement.get_text("\n", strip=True)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return f"{header}\n\n{text}"[:80_000]
+
+
+def render_codeforces_problem_statement_html(problem_id: str) -> str:
+    soup = fetch_codeforces_problem_page(problem_id)
+    statement = soup.select_one(".problem-statement")
+    if statement is None:
+        raise RuntimeError("Cannot find Codeforces problem statement")
+    for block in statement.select("script, style"):
+        block.decompose()
+    title_node = statement.select_one(".title")
+    title = title_node.get_text(" ", strip=True) if title_node else f"Codeforces {problem_id}"
+    html = str(statement)
+    html = re.sub(r"\$\$\$(.*?)\$\$\$", r"<code>\1</code>", html, flags=re.S)
+    html = re.sub(r"\$\$(.*?)\$\$", r"<code>\1</code>", html, flags=re.S)
+    html = html.replace('\\leq', '&le;').replace('\\le', '&le;').replace('\\geq', '&ge;').replace('\\ge', '&ge;')
+    html = html.replace('\\dots', '&hellip;').replace('\\cdot', '&middot;')
+    html = re.sub(r"\\color\{[^}]+\}\{([^{}]*)\}", r"\1", html)
+    html = re.sub(r"\\(?:max|min)\b", lambda m: m.group(0)[1:], html)
+    return f'''<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html_escape(title)}</title>
+  <style>
+    :root {{ color-scheme: light; }}
+    body {{ margin: 0; padding: 24px 30px 36px; font: 15px/1.72 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #18231f; background: #fff; }}
+    .problem-statement {{ max-width: 900px; margin: 0 auto; }}
+    .header {{ margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid #dfe6e1; text-align: center; }}
+    .title {{ font-size: 22px; font-weight: 750; margin-bottom: 10px; }}
+    .time-limit, .memory-limit, .input-file, .output-file {{ color: #52615a; font-size: 13px; line-height: 1.5; }}
+    p {{ margin: 11px 0; }}
+    .section-title {{ margin: 24px 0 8px; font-weight: 750; font-size: 18px; }}
+    code {{ padding: 1px 4px; border-radius: 4px; background: #f3f6f4; font-family: "Cascadia Code", Consolas, monospace; font-size: 0.94em; }}
+    pre {{ margin: 8px 0 14px; padding: 12px 14px; border: 1px solid #dce5df; border-radius: 7px; background: #f8faf8; white-space: pre-wrap; word-break: break-word; font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; }}
+    .sample-tests .input, .sample-tests .output {{ margin: 12px 0; }}
+    .sample-tests .title {{ margin: 0 0 6px; text-align: left; font-size: 14px; font-weight: 700; }}
+  </style>
+</head>
+<body>
+{html}
+</body>
+</html>'''
+
+
+def fetch_codeforces_sample(problem_id: str) -> dict:
+    soup = fetch_codeforces_problem_page(problem_id)
+    sample = soup.select_one(".sample-tests")
+    if sample is None:
+        raise RuntimeError("Codeforces page has no sample tests")
+    inputs = [codeforces_pre_text(pre) for pre in sample.select(".input pre")]
+    outputs = [codeforces_pre_text(pre) for pre in sample.select(".output pre")]
+    if not inputs or not outputs:
+        raise RuntimeError("Cannot parse Codeforces sample input/output")
+    return {
+        "status": "FETCHED",
+        "source": "sample",
+        "judge": "codeforces",
+        "problem_id": problem_id,
+        "input_data": "\n".join(inputs)[:1_000_000],
+        "expected_output": "\n".join(outputs)[:1_000_000],
+        "message": "Loaded sample tests from Codeforces problem page",
+    }
+
+
+def html_escape(value: str) -> str:
+    import html
+    return html.escape(value, quote=False)
+
+
+def fetch_problem_statement_html(judge: str, problem_id: str) -> str:
+    normalized_judge = (judge or "uva").lower()
+    if normalized_judge == "codeforces":
+        return render_codeforces_problem_statement_html(problem_id)
+    else:
+        statement = extract_uva_problem_statement(validate_problem_number(problem_id))
+        title = f"UVA {problem_id}"
+    body = html_escape(statement)
+    return f"""<!doctype html>
+<html lang=\"zh-Hant\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>{html_escape(title)}</title>
+  <style>
+    body {{ margin: 0; padding: 22px 26px; font: 14px/1.65 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1c2521; background: #fff; }}
+    h1 {{ margin: 0 0 16px; font-size: 20px; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; font-family: 'Cascadia Code', Consolas, monospace; }}
+  </style>
+</head>
+<body>
+  <h1>{html_escape(title)}</h1>
+  <pre>{body}</pre>
+</body>
+</html>"""
+
+
 def is_pdf_noise_line(line: str) -> bool:
     compact = re.sub(r"\s+", " ", line).strip()
     if not compact:
@@ -141,6 +285,7 @@ def extract_uva_problem_statement(problem_number: int) -> str:
 
 def build_ai_prompt(
     mode: str,
+    judge: str,
     problem_id: str,
     language: str,
     code: str,
@@ -153,7 +298,7 @@ def build_ai_prompt(
     problem_statement: str = "",
 ) -> str:
     if mode == "translate":
-        return f"""You are translating a UVA Online Judge problem statement for a Traditional Chinese reader.
+        return f"""You are translating an online judge problem statement for a Traditional Chinese reader.
 
 Task:
 - Translate the problem statement into clear Traditional Chinese.
@@ -162,25 +307,26 @@ Task:
 - If the statement contains input/output format details, make them easy to understand.
 - If the user wrote an extra question, answer only if it is about understanding the statement.
 
-UVA problem: {problem_id}
+Online judge: {judge}
+Problem: {problem_id}
 User question:
 ```text
 {truncate_context(question, 4_000) or "(none)"}
 ```
 
-Problem statement extracted from the UVA PDF:
+Problem statement extracted from the judge page:
 ```text
 {truncate_context(problem_statement, 70_000)}
 ```
 """
 
     if mode == "expected":
-        return f"""You are an Online Judge output oracle. Use the UVA problem statement to compute the exact expected stdout for the user's provided stdin.
+        return f"""You are an Online Judge output oracle. Use the online judge problem statement to compute the exact expected stdout for the user's provided stdin.
 
 Task:
 - Answer in Traditional Chinese.
 - DO NOT create new input. Use the provided stdin exactly as-is.
-- Compute the exact expected stdout for that stdin according to the UVA problem statement.
+- Compute the exact expected stdout for that stdin according to the online judge problem statement.
 - Do not provide a full accepted solution or code.
 - If the stdin is invalid for the problem, explain the issue instead of inventing output.
 - If you cannot confidently compute the output, say so clearly instead of guessing.
@@ -193,7 +339,8 @@ expected stdout:
 
 After the block, add a short Traditional Chinese note only if useful.
 
-UVA problem: {problem_id}
+Online judge: {judge}
+Problem: {problem_id}
 User-provided stdin:
 ```text
 {truncate_context(input_data, 20_000) or "(empty)"}
@@ -201,17 +348,17 @@ User-provided stdin:
 
 User request:
 ```text
-{truncate_context(question, 4_000) or "?????? stdin ??????"}
+{truncate_context(question, 4_000) or "使用者未提供額外問題，只要求計算 stdin 的標準輸出"}
 ```
 
-Problem statement extracted from the UVA PDF:
+Problem statement extracted from the judge page:
 ```text
 {truncate_context(problem_statement, 70_000)}
 ```
 """
 
     if mode == "tests":
-        return f"""You are an Online Judge test-data assistant. Use the UVA problem statement to create local test cases.
+        return f"""You are an Online Judge test-data assistant. Use the online judge problem statement to create local test cases.
 
 Task:
 - Answer in Traditional Chinese.
@@ -233,13 +380,14 @@ expected stdout:
 
 After the two blocks, add a short Traditional Chinese note explaining what the test is meant to catch.
 
-UVA problem: {problem_id}
+Online judge: {judge}
+Problem: {problem_id}
 User request:
 ```text
-{truncate_context(question, 4_000) or "?????????????????????????????"}
+{truncate_context(question, 4_000) or "請產生容易測出錯誤的本機測資"}
 ```
 
-Problem statement extracted from the UVA PDF:
+Problem statement extracted from the judge page:
 ```text
 {truncate_context(problem_statement, 70_000)}
 ```
@@ -1334,12 +1482,16 @@ def fetch_udebug_test(problem_number: int) -> dict:
 
 
 @worker.task
-def fetch_test_data_task(problem_id: str, source: str) -> dict:
+def fetch_test_data_task(judge: str, problem_id: str, source: str) -> dict:
     try:
-        problem_number = validate_problem_number(problem_id)
-        if source == "sample":
-            return fetch_uva_sample(problem_number)
-        return {"status": "SE", "error_log": "目前只支援載入 UVA 題目範例；uDebug 請使用開啟按鈕手動查看"}
+        normalized_judge = (judge or "uva").lower()
+        if source == "sample" and normalized_judge == "uva":
+            return fetch_uva_sample(validate_problem_number(problem_id))
+        if source == "udebug" and normalized_judge == "uva":
+            return fetch_udebug_test(validate_problem_number(problem_id))
+        if source == "sample" and normalized_judge == "codeforces":
+            return fetch_codeforces_sample(problem_id)
+        return {"status": "SE", "error_log": "Unsupported test source"}
     except Exception as exc:
         return {"status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
 
@@ -1347,6 +1499,7 @@ def fetch_test_data_task(problem_id: str, source: str) -> dict:
 @worker.task
 def ask_ai_helper_task(
     mode: str,
+    judge: str,
     problem_id: str,
     language: str,
     code: str,
@@ -1375,19 +1528,25 @@ def ask_ai_helper_task(
         }
 
     problem_statement = ""
-    if mode in {"translate", "tests"}:
+    if mode in {"translate", "tests", "expected"}:
         try:
-            problem_statement = extract_uva_problem_statement(validate_problem_number(problem_id))
+            normalized_judge = (judge or "uva").lower()
+            if normalized_judge == "codeforces":
+                problem_statement = extract_codeforces_problem_statement(problem_id)
+            else:
+                problem_statement = extract_uva_problem_statement(validate_problem_number(problem_id))
         except Exception as exc:
-            action = "題目翻譯" if mode == "translate" else "AI 測資產生"
+            action = "題目翻譯" if mode == "translate" else "AI 助教"
             return {
                 "status": "SE",
-                "message": f"{action}前讀取 UVA PDF 失敗，請確認題號或稍後再試。",
+                "message": f"{action}無法讀取題目頁，請確認題號、網路或題目頁格式。",
                 "error_log": f"{type(exc).__name__}: {exc}",
             }
 
+
     prompt = build_ai_prompt(
         mode=mode,
+        judge=judge,
         problem_id=problem_id,
         language=language,
         code=code,
@@ -1477,6 +1636,238 @@ def ask_ai_helper_task(
         "model": model,
         "message": text[:20_000],
     }
+
+
+class CodeforcesClient:
+    BASE_URL = "https://codeforces.com"
+
+    def __init__(self, username: str, password: str):
+        self.username = username
+        self.password = password
+
+    @staticmethod
+    def language_id(language: str) -> str:
+        if language == "cpp":
+            return os.getenv("CODEFORCES_CPP_LANGUAGE_ID", "54")
+        return os.getenv("CODEFORCES_PY_LANGUAGE_ID", "70")
+
+    @staticmethod
+    def verdict_status(verdict: str) -> str | None:
+        normalized = " ".join((verdict or "").lower().split())
+        if not normalized or any(word in normalized for word in ("queue", "running", "testing", "judging", "pending")):
+            return None
+        mappings = (
+            ("accepted", "AC"),
+            ("wrong answer", "WA"),
+            ("time limit", "TLE"),
+            ("runtime error", "RE"),
+            ("compilation error", "CE"),
+            ("memory limit", "MLE"),
+            ("idleness limit", "ILE"),
+            ("output limit", "OLE"),
+            ("presentation error", "PE"),
+            ("skipped", "SKIPPED"),
+            ("rejected", "REJECTED"),
+        )
+        return next((status for marker, status in mappings if marker in normalized), "JUDGED")
+
+    @staticmethod
+    def submission_rows(driver) -> list[dict]:
+        return driver.execute_script(
+            """
+            return Array.from(document.querySelectorAll('tr[data-submission-id], table.status-frame-datatable tr'))
+              .map((row) => {
+                const cells = Array.from(row.querySelectorAll('td')).map((td) => td.innerText.trim()).filter(Boolean);
+                const id = row.getAttribute('data-submission-id') || (cells[0] || '').match(/\\d+/)?.[0] || '';
+                const verdictNode = row.querySelector('.submissionVerdictWrapper, span.verdict-accepted, span.verdict-rejected');
+                const verdict = verdictNode ? verdictNode.innerText.trim() : (cells.find((text) => /accepted|wrong answer|time limit|runtime error|compilation error|memory limit|running|queue|testing/i.test(text)) || '');
+                return {id, cells, verdict};
+              })
+              .filter((item) => item.id && item.cells.length >= 4);
+            """
+        )
+
+    def submit(self, problem_id: str, language: str, code: str) -> dict:
+        from selenium import webdriver
+        from selenium.common.exceptions import TimeoutException
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        contest_id, index = parse_codeforces_problem_id(problem_id)
+        chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
+        driver_path = shutil.which("chromedriver")
+        if not chromium_path or not driver_path:
+            raise RuntimeError("worker needs Chromium and chromedriver for Codeforces submit")
+
+        options = webdriver.ChromeOptions()
+        options.binary_location = chromium_path
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1360,900")
+        options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+        driver = None
+        try:
+            driver = webdriver.Chrome(service=Service(executable_path=driver_path), options=options)
+            driver.set_page_load_timeout(35)
+            driver.execute_cdp_cmd("Network.enable", {})
+            driver.execute_cdp_cmd(
+                "Network.setBlockedURLs",
+                {"urls": ["*://*.googlesyndication.com/*", "*://*.doubleclick.net/*", "*://mc.yandex.ru/*"]},
+            )
+
+            driver.get(f"{self.BASE_URL}/enter?back=%%2F")
+            login_result = driver.execute_script(
+                """
+                if (document.querySelector('a[href*="/logout"]')) return {ok: true, already: true};
+                const handleSelector = [
+                  'input[name="handleOrEmail"]',
+                  'input[name="handle"]',
+                  'input#handleOrEmail',
+                  'input#handle',
+                  'input[type="text"]',
+                  'input[type="email"]'
+                ].join(',');
+                const passwordSelector = 'input[name="password"], input#password, input[type="password"]';
+                let form = Array.from(document.forms).find((item) =>
+                  item.querySelector(handleSelector) && item.querySelector(passwordSelector)
+                );
+                const handle = form ? form.querySelector(handleSelector) : document.querySelector(handleSelector);
+                const password = form ? form.querySelector(passwordSelector) : document.querySelector(passwordSelector);
+                if (!handle || !password) {
+                  const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 800);
+                  return {
+                    ok: false,
+                    error: `Cannot find Codeforces login form. url=${location.href}; title=${document.title}; text=${text}`
+                  };
+                }
+                form = form || handle.closest('form') || password.closest('form');
+                handle.focus();
+                handle.value = arguments[0];
+                password.focus();
+                password.value = arguments[1];
+                for (const element of [handle, password]) {
+                  element.dispatchEvent(new Event('input', {bubbles: true}));
+                  element.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                const submit = (form && form.querySelector('input[type="submit"], button[type="submit"]')) ||
+                  document.querySelector('input[type="submit"], button[type="submit"]');
+                if (form && typeof form.requestSubmit === 'function') form.requestSubmit(submit || undefined);
+                else if (submit) submit.click();
+                else if (form) form.submit();
+                else return {ok: false, error: 'Cannot find Codeforces login submit button'};
+                return {ok: true};
+                """,
+                self.username,
+                self.password,
+            )
+            if not login_result.get("ok"):
+                error = login_result.get("error", "Codeforces login failed")
+                if "Just a moment" in error or "Cloudflare" in error or "security verification" in error:
+                    raise RuntimeError("Codeforces Cloudflare security verification blocked worker automation. Use manual submit from the browser instead.")
+                raise RuntimeError(error)
+
+            try:
+                WebDriverWait(driver, 25).until(
+                    lambda browser: browser.execute_script(
+                        "return Boolean(document.querySelector('a[href*=\"/logout\"]')) || !document.querySelector('input[name=\"password\"]');"
+                    )
+                )
+            except TimeoutException as exc:
+                raise RuntimeError("Codeforces login timed out; CAPTCHA or two-factor checks may be blocking automation") from exc
+
+            page_text = driver.execute_script("return document.body?.innerText || '';")
+            page_title = driver.execute_script("return document.title || '';")
+            current_url = driver.current_url
+            if "Invalid handle" in page_text or "Invalid password" in page_text or "Captcha" in page_text or "captcha" in page_text.lower():
+                snippet = " ".join(page_text.split())[:800]
+                raise RuntimeError(f"Codeforces login failed; check credentials, CAPTCHA, or bot protection. url={current_url}; title={page_title}; text={snippet}")
+
+            submissions_url = f"{self.BASE_URL}/submissions/{self.username}"
+            driver.get(submissions_url)
+            rows = self.submission_rows(driver)
+            previous_id = rows[0]["id"] if rows else None
+
+            driver.get(f"{self.BASE_URL}/problemset/submit")
+            submit_result = driver.execute_script(
+                """
+                const problemCode = arguments[0];
+                const languageId = arguments[1];
+                const source = arguments[2];
+                const form = Array.from(document.forms).find((item) =>
+                  item.querySelector('input[name="submittedProblemCode"], input[name="problemCode"]') &&
+                  item.querySelector('select[name="programTypeId"]') &&
+                  item.querySelector('textarea[name="source"]')
+                );
+                if (!form) return {ok: false, error: 'Cannot find Codeforces submit form'};
+                const problem = form.querySelector('input[name="submittedProblemCode"], input[name="problemCode"]');
+                const language = form.querySelector('select[name="programTypeId"]');
+                const sourceArea = form.querySelector('textarea[name="source"]');
+                problem.value = problemCode;
+                language.value = languageId;
+                sourceArea.value = source;
+                for (const element of [problem, language, sourceArea]) {
+                  element.dispatchEvent(new Event('input', {bubbles: true}));
+                  element.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                const submit = form.querySelector('input[type="submit"], button[type="submit"]');
+                if (typeof form.requestSubmit === 'function') form.requestSubmit(submit || undefined);
+                else form.submit();
+                return {ok: true};
+                """,
+                f"{contest_id}{index}",
+                self.language_id(language),
+                code,
+            )
+            if not submit_result.get("ok"):
+                raise RuntimeError(submit_result.get("error", "Codeforces submit form failed"))
+
+            time.sleep(2)
+            driver.get(submissions_url)
+            deadline = time.monotonic() + int(os.getenv("CODEFORCES_VERDICT_TIMEOUT", "90"))
+            latest = None
+            status = None
+            while time.monotonic() < deadline:
+                rows = self.submission_rows(driver)
+                latest = next((row for row in rows if row["id"] != previous_id), rows[0] if rows else None)
+                if latest:
+                    status = self.verdict_status(latest.get("verdict", ""))
+                    if status:
+                        break
+                time.sleep(3)
+                driver.refresh()
+
+            if not latest:
+                raise RuntimeError("Codeforces submission was sent, but no new submission row was found")
+            return {
+                "status": status or "SUBMITTED",
+                "problem_id": f"{contest_id}{index}",
+                "submission_id": latest.get("id", ""),
+                "verdict": latest.get("verdict", ""),
+                "message": latest.get("verdict", "") or "Codeforces submission queued",
+            }
+        finally:
+            if driver is not None:
+                driver.quit()
+
+
+@worker.task
+def submit_codeforces_task(problem_id: str, language: str, code: str) -> dict:
+    try:
+        parse_codeforces_problem_id(problem_id)
+    except ValueError as exc:
+        return {"status": "SE", "error_log": str(exc)}
+
+    username = os.getenv("CODEFORCES_USERNAME", "")
+    password = os.getenv("CODEFORCES_PASSWORD", "")
+    if not username or not password:
+        return {"status": "SE", "error_log": "Set CODEFORCES_USERNAME and CODEFORCES_PASSWORD in .env"}
+    try:
+        return CodeforcesClient(username, password).submit(problem_id, language, code)
+    except Exception as exc:
+        return {"status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
 
 
 @worker.task
