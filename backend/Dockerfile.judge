@@ -1,6 +1,25 @@
-FROM alpine:3.20
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache g++ python3 && adduser -D -u 1001 judgeuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        build-essential \
+        python3 \
+        pypy3 \
+        openjdk-17-jdk-headless \
+        nodejs \
+        golang-go \
+        rustc \
+        cargo \
+        fp-compiler \
+        perl \
+        php-cli \
+        ruby-full \
+        ocaml-nox \
+        ldc \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1001 judgeuser
+
 WORKDIR /sandbox
 USER judgeuser
 

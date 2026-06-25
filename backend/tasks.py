@@ -504,32 +504,61 @@ def run_container(host_dir: Path, command: list[str], stdin_data: str = "", time
 
 @worker.task
 def judge_submission_task(submission_id: str, code: str, language: str, input_data: str, expected_output: str) -> dict:
-    if language not in {"cpp", "py"}:
-        return {"submission_id": submission_id, "status": "SE", "error_log": "不支援的語言"}
+    language_aliases = {
+        "cpp": "cf_cpp17", "cpp17": "cf_cpp17", "cpp20": "cf_cpp20", "c": "cf_c11", "py": "cf_py313", "java": "cf_java21", "js": "cf_node",
+        "uva_c": "c", "uva_java": "java", "uva_pascal": "pascal", "uva_cpp11": "cpp11", "uva_py3": "py",
+        "cf_c11": "c", "cf_cpp17": "cpp17", "cf_cpp20": "cpp20", "cf_cpp23": "cpp23", "cf_java21": "java", "cf_py313": "py", "cf_pypy310": "pypy", "cf_js_v8": "js_v8", "cf_node": "js",
+        "cf_rust2021": "rust2021", "cf_rust2024": "rust2024", "cf_go": "go", "cf_perl": "perl", "cf_php": "php", "cf_ruby": "ruby", "cf_ocaml": "ocaml", "cf_d": "d",
+    }
+    runner_language = language_aliases.get(language)
+    unsupported_local = {}
+    if not runner_language:
+        label = unsupported_local.get(language, language)
+        return {"submission_id": submission_id, "status": "SE", "error_log": f"Local runner for {label} is not installed yet"}
+    language_specs = {
+        "c": {"filename": "solution.c", "compile": ["gcc", "-std=c11", "-O2", "-pipe", "solution.c", "-lm", "-o", "solution"], "run": ["./solution"]},
+        "pascal": {"filename": "solution.pas", "compile": ["fpc", "-O2", "-osolution", "solution.pas"], "run": ["./solution"]},
+        "cpp11": {"filename": "solution.cpp", "compile": ["g++", "-std=c++11", "-O2", "-pipe", "solution.cpp", "-o", "solution"], "run": ["./solution"]},
+        "cpp17": {"filename": "solution.cpp", "compile": ["g++", "-std=c++17", "-O2", "-pipe", "solution.cpp", "-o", "solution"], "run": ["./solution"]},
+        "cpp20": {"filename": "solution.cpp", "compile": ["g++", "-std=c++20", "-O2", "-pipe", "solution.cpp", "-o", "solution"], "run": ["./solution"]},
+        "cpp23": {"filename": "solution.cpp", "compile": ["g++", "-std=c++23", "-O2", "-pipe", "solution.cpp", "-o", "solution"], "run": ["./solution"]},
+        "py": {"filename": "solution.py", "run": ["python3", "-I", "-B", "solution.py"]},
+        "pypy": {"filename": "solution.py", "run": ["pypy3", "solution.py"]},
+        "java": {"filename": "Main.java", "compile": ["javac", "Main.java"], "run": ["java", "Main"]},
+        "js": {"filename": "solution.js", "run": ["node", "solution.js"]},
+        "js_v8": {"filename": "solution.js", "extra_files": {"cf_v8_runner.js": "const fs = require('fs');\nconst lines = fs.readFileSync(0, 'utf8').replace(/\\r\\n/g, '\\n').split('\\n');\nlet index = 0;\nglobal.readline = () => { if (index >= lines.length) throw new Error('EOF'); return lines[index++]; };\nrequire('./solution.js');\n"}, "run": ["node", "cf_v8_runner.js"]},
+        "perl": {"filename": "solution.pl", "run": ["perl", "solution.pl"]},
+        "php": {"filename": "solution.php", "run": ["php", "solution.php"]},
+        "ruby": {"filename": "solution.rb", "run": ["ruby", "solution.rb"]},
+        "ocaml": {"filename": "solution.ml", "compile": ["ocamlopt", "-O3", "solution.ml", "-o", "solution"], "run": ["./solution"]},
+        "d": {"filename": "solution.d", "compile": ["ldc2", "-O2", "solution.d", "-of=solution"], "run": ["./solution"]},
+        "rust2021": {"filename": "solution.rs", "compile": ["rustc", "--edition=2021", "-O", "solution.rs", "-o", "solution"], "run": ["./solution"]},
+        "rust2024": {"filename": "solution.rs", "compile": ["rustc", "--edition=2024", "-O", "solution.rs", "-o", "solution"], "run": ["./solution"]},
+        "go": {"filename": "solution.go", "compile": ["go", "build", "-o", "solution", "solution.go"], "run": ["./solution"]},
+    }
+    spec = language_specs.get(runner_language)
+    if not spec:
+        return {"submission_id": submission_id, "status": "SE", "error_log": "Unsupported language"}
 
     container_dir = SANDBOX_ROOT / submission_id
     host_dir = HOST_SANDBOX_ROOT / submission_id
-    # judge container 使用 uid 1001；目錄只存活於單次工作，結束後立即刪除。
     container_dir.mkdir(mode=0o777, parents=True, exist_ok=False)
     os.chmod(container_dir, 0o777)
     started = time.monotonic()
 
     try:
-        filename = "solution.cpp" if language == "cpp" else "solution.py"
+        filename = spec["filename"]
         (container_dir / filename).write_text(code, encoding="utf-8")
         os.chmod(container_dir / filename, 0o644)
+        for extra_name, extra_content in spec.get("extra_files", {}).items():
+            (container_dir / extra_name).write_text(extra_content, encoding="utf-8")
+            os.chmod(container_dir / extra_name, 0o644)
 
-        if language == "cpp":
-            exit_code, _, compile_error = run_container(
-                host_dir,
-                ["g++", "-std=c++17", "-O2", "-pipe", "solution.cpp", "-o", "solution"],
-                timeout=15,
-            )
+        if spec.get("compile"):
+            exit_code, _, compile_error = run_container(host_dir, spec["compile"], timeout=30)
             if exit_code != 0:
                 return {"submission_id": submission_id, "status": "CE", "stdout": "", "error_log": compile_error[:20_000]}
-            command = ["./solution"]
-        else:
-            command = ["python3", "-I", "-B", "solution.py"]
+        command = spec["run"]
 
         exit_code, stdout, stderr = run_container(host_dir, command, input_data, timeout=5)
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -545,7 +574,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
                 status = "AC"
             elif normalize_output_without_blank_lines(stdout) == normalize_output_without_blank_lines(expected_output):
                 status = "AC"
-                message = "輸出內容正確；只差空白行，已視為 AC（UVA PDF 抽樣有時會漏掉空行）"
+                message = "Only blank lines differ; accepted as AC."
             else:
                 status = "WA"
         elif not expected_output:
@@ -553,18 +582,12 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
         else:
             status = "AC"
 
-        payload = {
-            "submission_id": submission_id,
-            "status": status,
-            "cpu_time": f"{elapsed_ms}ms",
-            "stdout": stdout[:100_000],
-            "error_log": stderr[:20_000],
-        }
+        payload = {"submission_id": submission_id, "status": status, "cpu_time": f"{elapsed_ms}ms", "stdout": stdout[:100_000], "error_log": stderr[:20_000]}
         if message:
             payload["message"] = message
         return payload
     except ImageNotFound:
-        return {"submission_id": submission_id, "status": "SE", "error_log": f"找不到 {JUDGE_IMAGE}，請先建立 judge image"}
+        return {"submission_id": submission_id, "status": "SE", "error_log": f"Judge image {JUDGE_IMAGE} was not found; build the judge image first"}
     except ContainerError as exc:
         return {"submission_id": submission_id, "status": "SE", "error_log": str(exc)}
     except Exception as exc:
@@ -796,9 +819,22 @@ class UvaClient:
         if submit_form is None:
             raise RuntimeError("已登入，但找不到 UVA 提交表單；提交頁面可能已改版")
         payload = self.hidden_fields(submit_form)
+        language = {
+            "cpp": "uva_cpp11", "cpp17": "uva_cpp11", "cpp20": "uva_cpp11", "c": "uva_c", "py": "uva_py3", "java": "uva_java",
+        }.get(language, language)
+        uva_language_ids = {
+            "uva_c": os.getenv("UVA_C_LANGUAGE_ID", "1"),
+            "uva_java": os.getenv("UVA_JAVA_LANGUAGE_ID", "2"),
+            "uva_pascal": os.getenv("UVA_PASCAL_LANGUAGE_ID", "3"),
+            "uva_cpp11": os.getenv("UVA_CPP_LANGUAGE_ID", "5"),
+            "uva_py3": os.getenv("UVA_PY_LANGUAGE_ID", "6"),
+        }
+        language_id = uva_language_ids.get(language, "")
+        if not language_id:
+            raise RuntimeError(f"UVA submit language id is not configured for {language}")
         payload.update({
             "localid": problem_id,
-            "language": os.getenv("UVA_CPP_LANGUAGE_ID", "5") if language == "cpp" else os.getenv("UVA_PY_LANGUAGE_ID", "6"),
+            "language": language_id,
             "code": code,
             "task": "save_submission",
         })
@@ -953,11 +989,19 @@ class UvaClient:
             submit_url = f"{self.BASE_URL}/index.php?option=com_onlinejudge&Itemid=25&page=submit_problem"
             stage = "載入提交表單"
             driver.get(submit_url)
-            language_id = (
-                os.getenv("UVA_CPP_LANGUAGE_ID", "5")
-                if language == "cpp"
-                else os.getenv("UVA_PY_LANGUAGE_ID", "6")
-            )
+            language = {
+                "cpp": "uva_cpp11", "cpp17": "uva_cpp11", "cpp20": "uva_cpp11", "c": "uva_c", "py": "uva_py3", "java": "uva_java",
+            }.get(language, language)
+            uva_language_ids = {
+                "uva_c": os.getenv("UVA_C_LANGUAGE_ID", "1"),
+                "uva_java": os.getenv("UVA_JAVA_LANGUAGE_ID", "2"),
+                "uva_pascal": os.getenv("UVA_PASCAL_LANGUAGE_ID", "3"),
+                "uva_cpp11": os.getenv("UVA_CPP_LANGUAGE_ID", "5"),
+                "uva_py3": os.getenv("UVA_PY_LANGUAGE_ID", "6"),
+            }
+            language_id = uva_language_ids.get(language, "")
+            if not language_id:
+                raise RuntimeError(f"UVA submit language id is not configured for {language}")
             submit_page_url = driver.current_url
             stage = "送出 UVA 表單"
             try:
@@ -1647,9 +1691,49 @@ class CodeforcesClient:
 
     @staticmethod
     def language_id(language: str) -> str:
-        if language == "cpp":
-            return os.getenv("CODEFORCES_CPP_LANGUAGE_ID", "54")
-        return os.getenv("CODEFORCES_PY_LANGUAGE_ID", "70")
+        language = {
+            "c": "cf_c11", "cpp": "cf_cpp17", "cpp17": "cf_cpp17", "cpp20": "cf_cpp20", "py": "cf_py313", "java": "cf_java21", "js": "cf_node",
+        }.get(language, language)
+        defaults = {
+            "cf_c11": "43",
+            "cf_cpp17": "54",
+            "cf_cpp20": "73",
+            "cf_cpp23": "89",
+            "cf_java21": "87",
+            "cf_py313": "100",
+            "cf_pypy310": "72",
+            "cf_js_v8": "34",
+            "cf_node": "55",
+            "cf_rust2021": "75",
+            "cf_rust2024": "95",
+            "cf_go": "32",
+            "cf_perl": "13",
+            "cf_php": "6",
+            "cf_ruby": "67",
+            "cf_ocaml": "19",
+            "cf_d": "28",
+        }
+        env_names = {
+            "cf_c11": "CODEFORCES_C_LANGUAGE_ID",
+            "cf_cpp17": "CODEFORCES_CPP_LANGUAGE_ID",
+            "cf_cpp20": "CODEFORCES_CPP20_LANGUAGE_ID",
+            "cf_cpp23": "CODEFORCES_CPP23_LANGUAGE_ID",
+            "cf_java21": "CODEFORCES_JAVA_LANGUAGE_ID",
+            "cf_py313": "CODEFORCES_PY_LANGUAGE_ID",
+            "cf_pypy310": "CODEFORCES_PYPY_LANGUAGE_ID",
+            "cf_js_v8": "CODEFORCES_JS_V8_LANGUAGE_ID",
+            "cf_node": "CODEFORCES_NODE_LANGUAGE_ID",
+            "cf_rust2021": "CODEFORCES_RUST2021_LANGUAGE_ID",
+            "cf_rust2024": "CODEFORCES_RUST2024_LANGUAGE_ID",
+            "cf_go": "CODEFORCES_GO_LANGUAGE_ID",
+            "cf_perl": "CODEFORCES_PERL_LANGUAGE_ID",
+            "cf_php": "CODEFORCES_PHP_LANGUAGE_ID",
+            "cf_ruby": "CODEFORCES_RUBY_LANGUAGE_ID",
+            "cf_ocaml": "CODEFORCES_OCAML_LANGUAGE_ID",
+            "cf_d": "CODEFORCES_D_LANGUAGE_ID",
+        }
+        return os.getenv(env_names.get(language, "CODEFORCES_CPP_LANGUAGE_ID"), defaults.get(language, "54"))
+
 
     @staticmethod
     def verdict_status(verdict: str) -> str | None:

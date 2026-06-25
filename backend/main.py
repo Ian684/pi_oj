@@ -125,10 +125,18 @@ class TestFetchRequest(BaseModel):
         self.problem_id = normalize_problem_id_for_judge(self.judge, self.problem_id)
 
 
-def validate_language(language: str) -> None:
-    if language not in {"cpp", "py"}:
-        raise HTTPException(status_code=422, detail="language 必須是 cpp 或 py")
+SUPPORTED_LANGUAGES = {
+    "uva_c", "uva_java", "uva_pascal", "uva_cpp11", "uva_py3",
+    "cf_c11", "cf_cpp17", "cf_cpp20", "cf_cpp23", "cf_java21", "cf_py313", "cf_pypy310",
+    "cf_js_v8", "cf_node", "cf_rust2021", "cf_rust2024", "cf_go",
+    "cf_perl", "cf_php", "cf_ruby", "cf_ocaml", "cf_d",
+    "c", "cpp", "cpp17", "cpp20", "py", "java", "js",
+}
 
+
+def validate_language(language: str) -> None:
+    if language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(status_code=422, detail="unsupported language")
 
 @app.get("/")
 def index() -> RedirectResponse:

@@ -24,13 +24,200 @@ const storedTheme = localStorage.getItem("pi-oj-theme");
 applyTheme(storedTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
 
 const templates = {
-  cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    ios::sync_with_stdio(false);\n    cin.tie(nullptr);\n\n    // 在這裡寫程式\n    return 0;\n}\n`,
-  py: `# 在這裡寫程式\n\ndef main():\n    pass\n\nif __name__ == "__main__":\n    main()\n`,
+  uva_c: `#include <stdio.h>
+
+int main(void) {
+    // Write code here
+    return 0;
+}
+`,
+  uva_java: `import java.io.*;
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        // Write code here
+    }
+}
+`,
+  uva_pascal: `program Main;
+begin
+  { Write code here }
+end.
+`,
+  uva_cpp11: `#include <iostream>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    // Write code here
+    return 0;
+}
+`,
+  uva_py3: `# Write code here
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()
+`,
+  cf_c11: `#include <stdio.h>
+
+int main(void) {
+    // Write code here
+    return 0;
+}
+`,
+  cf_cpp17: `#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    // Write code here
+    return 0;
+}
+`,
+  cf_cpp20: `#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    // Write code here
+    return 0;
+}
+`,
+  cf_cpp23: `#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    // Write code here
+    return 0;
+}
+`,
+  cf_java21: `import java.io.*;
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        // Write code here
+    }
+}
+`,
+  cf_py313: `# Write code here
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()
+`,
+  cf_pypy310: `# Write code here
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()
+`,
+  cf_js_v8: `// Codeforces JavaScript V8 uses readline().
+// Write code here
+`,
+  cf_node: `const fs = require("fs");
+const input = fs.readFileSync(0, "utf8").trimEnd();
+
+// Write code here
+`,
+  cf_rust2021: `use std::io::{self, Read};
+
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    // Write code here
+}
+`,
+  cf_rust2024: `use std::io::{self, Read};
+
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    // Write code here
+}
+`,
+  cf_go: `package main
+
+import "fmt"
+
+func main() {
+    // Write code here
+    _ = fmt.Println
+}
+`,
+  cf_perl: `use strict;
+use warnings;
+
+# Write code here
+`,
+  cf_php: `<?php
+$input = stream_get_contents(STDIN);
+// Write code here
+`,
+  cf_ruby: `input = STDIN.read
+# Write code here
+`,
+  cf_ocaml: `(* Write code here *)
+`,
+  cf_d: `import std.stdio;
+
+void main() {
+    // Write code here
+}
+`,
 };
 
+const languageOptionsByJudge = {
+  uva: [["uva_c", "ANSI C 5.3.0"], ["uva_java", "JAVA 1.8.0"], ["uva_pascal", "PASCAL 3.0.0"], ["uva_cpp11", "C++11 5.3.0"], ["uva_py3", "PYTH3 3.5.1"]],
+  codeforces: [["cf_c11", "GNU GCC C11 5.1.0"], ["cf_cpp17", "GNU G++17 7.3.0"], ["cf_cpp20", "GNU G++20 13.2"], ["cf_cpp23", "GNU G++23 14.2"], ["cf_java21", "Java 21 64bit"], ["cf_py313", "Python 3.13.2"], ["cf_pypy310", "PyPy 3.10"], ["cf_js_v8", "JavaScript V8"], ["cf_node", "Node.js 15.8.0"], ["cf_rust2021", "Rust 1.89.0 (2021)"], ["cf_rust2024", "Rust 1.89.0 (2024)"], ["cf_go", "Go 1.22.2"], ["cf_perl", "Perl 5.20.1"], ["cf_php", "PHP 8.1.7"], ["cf_ruby", "Ruby 3.2.2"], ["cf_ocaml", "OCaml 4.02.1"], ["cf_d", "D DMD32 2.105.0"]],
+};
+const monacoLanguageModes = {uva_c:"c", uva_java:"java", uva_pascal:"pascal", uva_cpp11:"cpp", uva_py3:"python", cf_c11:"c", cf_cpp17:"cpp", cf_cpp20:"cpp", cf_cpp23:"cpp", cf_java21:"java", cf_py313:"python", cf_pypy310:"python", cf_js_v8:"javascript", cf_node:"javascript", cf_rust2021:"rust", cf_rust2024:"rust", cf_go:"go", cf_perl:"perl", cf_php:"php", cf_ruby:"ruby", cf_ocaml:"ocaml", cf_d:"d"};
+const languageAliases = {cpp:"uva_cpp11", cpp17:"cf_cpp17", cpp20:"cf_cpp20", c:"cf_c11", py:"cf_py313", java:"cf_java21", js:"cf_node"};
+function defaultLanguageForJudge(judge = getJudge()) { return judge === "codeforces" ? "cf_cpp17" : "uva_cpp11"; }
+function languageStorageKey(judge = getJudge()) { return `pi-oj-language-${judge}`; }
+function normalizeLanguage(value, judge = getJudge()) {
+  const options = languageOptionsByJudge[judge] || languageOptionsByJudge.uva;
+  const normalized = languageAliases[value] || value || defaultLanguageForJudge(judge);
+  return options.some(([id]) => id === normalized) ? normalized : defaultLanguageForJudge(judge);
+}
+function renderLanguageOptions(judge = getJudge()) {
+  const select = $("language");
+  const options = languageOptionsByJudge[judge] || languageOptionsByJudge.uva;
+  const nextValue = normalizeLanguage(localStorage.getItem(languageStorageKey(judge)) || select.value, judge);
+  select.replaceChildren(...options.map(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }));
+  select.value = nextValue;
+  activeLanguage = nextValue;
+  localStorage.setItem(languageStorageKey(judge), nextValue);
+}
+function currentLanguageMode() { return monacoLanguageModes[$("language").value] || "plaintext"; }
+
 const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
-$("code").value = saved.cpp || templates.cpp;
+let activeLanguage = defaultLanguageForJudge(localStorage.getItem("pi-oj-judge") || "uva");
 $("judge").value = localStorage.getItem("pi-oj-judge") || "uva";
+renderLanguageOptions(getJudge());
+$("code").value = saved[activeLanguage] || templates[activeLanguage] || "";
 $("problemId").value = localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
 updateJudgeUi();
 const savedTests = JSON.parse(localStorage.getItem("pi-oj-tests") || "{}");
@@ -353,7 +540,7 @@ async function initializeMonaco() {
   ], () => {
     codeEditor = monaco.editor.create($("editor"), {
       value: $("code").value,
-      language: $("language").value === "cpp" ? "cpp" : "python",
+      language: currentLanguageMode(),
       theme: root.dataset.theme === "dark" ? "vs-dark" : "vs",
       automaticLayout: true,
       fontFamily: '"Cascadia Code", "SFMono-Regular", Consolas, monospace',
@@ -732,17 +919,23 @@ function switchSidePanel(panel) {
 $("testTab").addEventListener("click", () => switchSidePanel("test"));
 $("aiTab").addEventListener("click", () => switchSidePanel("ai"));
 $("language").addEventListener("change", (event) => {
-  const previous = event.target.value === "cpp" ? "py" : "cpp";
-  saved[previous] = getCode();
-  setCode(saved[event.target.value] || templates[event.target.value]);
+  saved[activeLanguage] = getCode();
+  activeLanguage = normalizeLanguage(event.target.value);
+  event.target.value = activeLanguage;
+  localStorage.setItem(languageStorageKey(), activeLanguage);
+  setCode(saved[activeLanguage] || templates[activeLanguage] || "");
   if (codeEditor && window.monaco) {
-    monaco.editor.setModelLanguage(codeEditor.getModel(), event.target.value === "cpp" ? "cpp" : "python");
+    monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
   }
   clearDiagnostics();
 });
 $("testSource").addEventListener("change", (event) => switchTestSource(event.target.value));
 $("judge").addEventListener("change", () => {
+  saved[activeLanguage] = getCode();
   localStorage.setItem("pi-oj-judge", getJudge());
+  renderLanguageOptions(getJudge());
+  setCode(saved[activeLanguage] || templates[activeLanguage] || "");
+  if (codeEditor && window.monaco) monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
   $("problemId").value = localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
   updateJudgeUi();
   switchTestSource($("testSource").value);

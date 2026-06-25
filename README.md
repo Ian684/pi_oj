@@ -1,163 +1,166 @@
-# Pi OJ MVP
+# Pi OJ
 
-目前提供：
+Pi OJ is a lightweight online judge workspace for Raspberry Pi 5. It provides a browser editor, local sandboxed runs, UVA integration, Codeforces problem/sample loading, and AI helper tools.
 
-- 瀏覽器內撰寫 C++17 / Python 3
-- 自訂 stdin 與預期輸出
-- Celery 非同步評測與結果輪詢
-- Docker 隔離編譯／執行
-- 使用自己的 UVA 帳號代理提交（實驗性）
+## Features
 
-## 在 Raspberry Pi 安裝
+- Local run with Docker sandbox
+- UVA problem PDF loading and sample extraction
+- Codeforces problem page loading and sample extraction
+- AI hint/debug/translation/test-data helpers
+- Wrong Answer diff table for local tests
+- ngrok-friendly private access
+- Judge-specific language lists
 
-需求：64-bit Raspberry Pi OS、Docker、Docker Compose plugin。
+## Quick Start
 
 ```bash
 cd ~/pi_oj
 cp .env.example .env
 mkdir -p backend/sandboxes
-```
-
-編輯 `.env`：
-
-```dotenv
-HOST_SANDBOX_ROOT=/home/ian/pi_oj/backend/sandboxes
-UVA_USERNAME=你的帳號
-UVA_PASSWORD=你的密碼
-```
-
-`HOST_SANDBOX_ROOT` 必須是樹莓派主機的絕對路徑。接著建立 image 並啟動：
-
-```bash
 docker compose build judge-image web worker
 docker compose up -d redis web worker
-docker compose ps
 ```
 
-在同一區域網路開啟：
+Open:
 
 ```text
-http://樹莓派IP:8000
+http://<raspberry-pi-ip>:8000
 ```
 
-查看工作程序日誌：
-
-```bash
-docker compose logs -f worker
-```
-
-## AI helper
-
-Pi OJ can call an AI tutor to provide hints or debugging guidance. The API key stays on the worker side and is never sent to the browser.
-
-Choose one provider in `.env`.
-
-Gemini, default and useful for free-tier testing:
-
-```dotenv
-AI_PROVIDER=gemini
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-3.1-flash-lite
-GEMINI_MAX_OUTPUT_TOKENS=900
-```
-
-OpenAI:
-
-```dotenv
-AI_PROVIDER=openai
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4.1-mini
-OPENAI_MAX_OUTPUT_TOKENS=900
-```
-
-Then rebuild/restart the worker and web image after changing these files:
-
-```bash
-docker compose build web worker
-docker compose up -d web worker
-```
-
-Buttons in the UI:
-
-- `AI 提示`: answers the optional `AI 想問什麼` question with algorithmic hints without requiring a previous run.
-- `AI 除錯`: sends the optional `AI 想問什麼` question plus latest stdout/error/verdict with your code to help explain WA/CE/RE/TLE.
-
-- `AI Translate`: downloads the UVA PDF for the required problem number and translates the problem statement into Traditional Chinese.
-- `AI 測資` test source: downloads the UVA PDF, asks the AI for one combined stdin / expected stdout pair, and applies it directly to the local input/output boxes.
-
-The AI prompt asks the tutor not to provide a complete accepted solution.
-## ngrok login gate
-
-The web service is bound to `127.0.0.1:8000` in `docker-compose.yml`, so it is not exposed directly on the LAN/public network. To share it through ngrok with a login gate, copy the example policy:
-
-```bash
-cp ngrok-policy.example.yaml ngrok-policy.yaml
-```
-
-`ngrok-policy.example.yaml` includes three selectable modes:
-
-- Microsoft OAuth: default, restricted to `s15465465@mail.yzu.edu.tw`.
-- Google OAuth: uncomment the Google block and replace `your-email@gmail.com`.
-- Basic Auth: uncomment the Basic Auth block and replace the `"username:password"` string. The password must be at least 8 characters.
-
-Use exactly one mode at a time. Keep `ngrok-policy.yaml` private if it contains real account rules or Basic Auth credentials.
-
-Start Pi OJ:
-
-```bash
-docker compose up -d redis web worker
-```
-
-Start ngrok with the policy:
+For ngrok, keep the app bound to `127.0.0.1:8000` and run:
 
 ```bash
 ngrok http 8000 --traffic-policy-file ngrok-policy.yaml
 ```
 
-Visitors must pass the selected ngrok login policy before traffic reaches Pi OJ.
-## API
+## Environment
 
-### 執行本機測試
+`.env` must be placed at the project root, for example `~/pi_oj/.env`.
 
-`POST /api/run`
+Important values:
 
-```json
-{
-  "language": "cpp",
-  "code": "#include <iostream>\nint main(){int a,b;std::cin>>a>>b;std::cout<<a+b;}",
-  "input_data": "2 3\n",
-  "expected_output": "5\n"
-}
+```dotenv
+HOST_SANDBOX_ROOT=/home/ian/pi_oj/backend/sandboxes
+UVA_USERNAME=
+UVA_PASSWORD=
+UVA_LOGIN_MODE=browser
+AI_PROVIDER=gemini
+GEMINI_API_KEY=
 ```
 
-### 提交 UVA
+Codeforces automatic server-side submit is intentionally not relied on because Cloudflare blocks headless worker automation. The UI opens the submit page and copies code for manual submission.
 
-`POST /api/uva/submit`
+## Language Groups
 
-```json
-{
-  "problem_id": "100",
-  "language": "cpp",
-  "code": "..."
-}
+### Enabled Local Runners
+
+These languages are installed in `pi_oj-judge` and can be used for local tests:
+
+- C
+- C++11 / C++17 / C++20 / C++23
+- Python 3
+- PyPy 3
+- Java
+- Node.js
+- JavaScript V8 shim via Node.js `readline()` compatibility
+- Pascal / Free Pascal
+- Go
+- Rust 2021 / Rust 2024
+- Perl
+- PHP
+- Ruby
+- OCaml
+- D via LDC
+
+### UVA Language List
+
+When judge is `UVA`, the language selector shows:
+
+- ANSI C 5.3.0
+- JAVA 1.8.0
+- PASCAL 3.0.0
+- C++11 5.3.0
+- PYTH3 3.5.1
+
+Submit language ids are configurable:
+
+```dotenv
+UVA_C_LANGUAGE_ID=1
+UVA_JAVA_LANGUAGE_ID=2
+UVA_PASCAL_LANGUAGE_ID=3
+UVA_CPP_LANGUAGE_ID=5
+UVA_PY_LANGUAGE_ID=6
 ```
 
-兩個端點都會回傳 `task_id`，使用 `GET /api/tasks/{task_id}` 查詢結果。
+### Codeforces Language List
 
-## 安全設計
+When judge is `Codeforces`, the language selector shows practical Pi-friendly languages:
 
-- API 容器沒有 Docker socket。
-- 使用者程式不透過 shell 拼接，測資直接送進 stdin。
-- judge 容器沒有網路、移除 Linux capabilities、啟用 `no-new-privileges`。
-- 限制 128 MB、0.5 CPU、64 processes、唯讀 root filesystem。
-- C++ 編譯限時 15 秒，程式執行限時 5 秒。
-- 每次工作使用隨機 UUID 目錄，完成後刪除。
+- GNU GCC C11 5.1.0
+- GNU G++17 7.3.0
+- GNU G++20 13.2
+- GNU G++23 14.2
+- Java 21 64bit
+- Python 3.13.2
+- PyPy 3.10
+- JavaScript V8
+- Node.js 15.8.0
+- Rust 1.89.0 (2021)
+- Rust 1.89.0 (2024)
+- Go 1.22.2
+- Perl 5.20.1
+- PHP 8.1.7
+- Ruby 3.2.2
+- OCaml 4.02.1
+- D DMD32 2.105.0
 
-掛載 Docker socket 的 worker 等同具有主機高權限，因此不要把 Celery/Redis port 暴露到公網，也不要接受不可信任來源直接呼叫 worker。正式公開服務應把 judge worker 放在獨立機器或 VM。
+Codeforces language ids are configurable in `.env`. They are mostly used if a future browser/helper submit path is added.
 
-## UVA 限制
+## Not Enabled Because They Are Too Heavy Or Awkward On Pi 5
 
-UVA 沒有為這個用途提供穩定的公開提交 API。此版本預設由 worker 內的無頭 Chromium 完成登入，再把 session 交給提交程序；網站改版、驗證碼、Cloudflare 或語言代碼異動都可能令它失效。Chromium 只安裝在 worker image，不會增加 web 容器的負擔。
+These are documented for future extension, but not shown in the default UI and not installed in the judge image:
 
-系統只會在收到可接受的 HTTP 回應後顯示 `SUBMITTED`，不會假造 `AC`。最終 verdict 目前請到 UVA 的 **My Submissions** 確認。若 UVA 表單已改版，請保留 worker log 以便更新 `UvaClient` adapter。
+- C#
+- F#
+- Scala
+- Kotlin
+- Delphi
+- PascalABC.NET
+
+Suggested extension design:
+
+- Keep the default `Dockerfile.judge` focused on the enabled local runners.
+- Add a separate `Dockerfile.judge-advanced` for heavy runtimes.
+- Add a `JUDGE_IMAGE_ADVANCED` option and route selected advanced languages to that image.
+- Show advanced languages only when the advanced image is enabled.
+
+## Rebuild After Language Changes
+
+Because language runtimes live in the judge image, rebuild it after changing `Dockerfile.judge`:
+
+```bash
+docker compose build judge-image web worker
+docker compose up -d --force-recreate web worker
+```
+
+## AI Helper
+
+Supported AI features:
+
+- Hint
+- Debug
+- Problem translation
+- AI-generated local tests
+- AI expected output for custom input
+
+The frontend sends only the task context to the backend; API keys stay in the worker container.
+
+## Security Notes
+
+- The web container does not mount Docker socket.
+- Only the worker mounts Docker socket so it can launch judge containers.
+- Do not expose Redis or Celery to public networks.
+- The worker has high host privileges through Docker socket access; keep ngrok/auth policies strict.
+- Local runs use per-submission directories under `backend/sandboxes` and remove them after execution.
 
