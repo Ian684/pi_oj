@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pi OJ</title>
-  <link rel="stylesheet" href="/static/style.css?v=14">
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=0.16.22">
+  <link rel="stylesheet" href="/static/style.css?v=22">
 </head>
 <body>
   <header>
     <div><strong>Pi OJ</strong><span>Raspberry Pi Online Judge</span></div>
     <div class="header-actions">
-      <span id="health" class="pill">檢查中</span>
+      <span id="health" class="pill">檢查中...</span>
       <button id="themeToggle" class="theme-toggle" type="button" aria-label="切換深色模式">
         <span id="themeIcon" aria-hidden="true">☾</span>
         <span id="themeLabel">深色</span>
@@ -30,17 +31,35 @@
             <option value="uva_py3">PYTH3 3.5.1</option>
           </select>
         </label>
-        <label>題庫
+        <label>平台
           <select id="judge">
             <option value="uva">UVA</option>
             <option value="codeforces">Codeforces</option>
+            <option value="cpe">CPE 星題</option>
           </select>
         </label>
         <label id="problemLabel">UVA 題號 <input id="problemId" inputmode="text" maxlength="32" placeholder="100-1800 / 10000-13400"></label>
+        <div id="cpeLabel" class="cpe-picker" hidden>
+          <label>CPE 星等
+            <select id="cpeLevel">
+              <option value="must">Must 49</option>
+              <option value="star1">1-star</option>
+              <option value="star2">2-star</option>
+              <option value="star3">3-star</option>
+              <option value="star4">4-star</option>
+              <option value="star5">5-star</option>
+            </select>
+          </label>
+          <label>CPE 題目
+            <select id="cpeStar">
+              <option value="">Select problem...</option>
+            </select>
+          </label>
+        </div>
         <button id="vimToggle" class="vim-toggle" type="button" aria-pressed="false" disabled>Vim OFF</button>
-        <button id="pdfToggle" type="button">題目 PDF</button>
+        <button id="pdfToggle" type="button">題目頁</button>
         <button id="run" class="primary" type="button">▶ 執行測試</button>
-        <button id="uva" type="button">↑ 提交 UVA</button>
+        <button id="uva" type="button">⇧ 提交 UVA</button>
       </div>
       <label class="editor-label">程式碼</label>
       <div id="editor" aria-label="程式碼編輯器"></div>
@@ -58,7 +77,7 @@
         <div class="source-bar">
           <label>測資來源
             <select id="testSource">
-              <option value="sample">題目</option>
+              <option value="sample">題目範例</option>
               <option value="udebug">uDebug</option>
               <option value="ai">AI</option>
               <option value="custom">自訂</option>
@@ -69,11 +88,11 @@
         </div>
 
         <div class="panel">
-          <label id="inputLabel" for="input">題目輸入</label>
+          <label id="inputLabel" for="input">題目範例輸入</label>
           <textarea id="input" placeholder="stdin"></textarea>
         </div>
         <div class="panel">
-          <label id="expectedLabel" for="expected">題目輸出（空白時只執行）</label>
+          <label id="expectedLabel" for="expected">題目範例輸出（空白時只執行）</label>
           <textarea id="expected" placeholder="expected stdout"></textarea>
         </div>
         <div class="panel result-panel">
@@ -92,18 +111,19 @@
         <div class="ai-header">
           <label for="aiQuestion">AI 助教</label>
           <div class="ai-actions">
+            <button id="aiAsk" class="primary" type="button">送出</button>
             <button id="aiHint" type="button">提示</button>
             <button id="aiDebug" type="button">除錯</button>
             <button id="aiTranslate" type="button">翻譯</button>
           </div>
         </div>
-        <textarea id="aiQuestion" placeholder="例如：提示我這題要用什麼演算法、為什麼我第 3 筆輸出錯、翻譯題意或要求隨機測資"></textarea>
-        <pre id="aiOutput" class="ai-output">AI 回答會顯示在這裡</pre>
+        <textarea id="aiQuestion" placeholder="直接問 AI，例如：Prim 演算法是什麼？給我模板。若要針對目前題目或程式碼，請在問題中提到這題、程式碼、輸入輸出或錯誤。"></textarea>
+        <div id="aiOutput" class="ai-output ai-readable">AI 回答會顯示在這裡</div>
       </section>
 
       <div id="pdfPane" class="pdf-pane" hidden>
         <div class="pdf-toolbar">
-          <strong id="pdfTitle">題目</strong>
+          <strong id="pdfTitle">題目頁</strong>
           <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">開新分頁</a>
           <button id="closePdf" type="button">關閉</button>
         </div>
@@ -113,7 +133,11 @@
   </main>
 
   <div id="toast" role="status"></div>
-<script src="/static/app.js?v=44"></script>
+  <script src="/static/vendor/marked.umd.js?v=15.0.12"></script>
+  <script src="/static/vendor/katex/katex.min.js?v=0.16.22"></script>
+  <script src="/static/vendor/katex/auto-render.min.js?v=0.16.22"></script>
+  <script src="/static/cpe-stars.js?v=4"></script>
+  <script src="/static/app.js?v=55"></script>
 </body>
 </html>
 

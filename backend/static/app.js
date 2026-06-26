@@ -8,6 +8,8 @@ let lastSubmittedExpectedOutput = "";
 let lastRunResult = null;
 let monacoLoaderSource = "local";
 
+const RUN_RESULT_STORAGE_KEY = "pi-oj-last-run-result";
+
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
 
@@ -214,17 +216,66 @@ function renderLanguageOptions(judge = getJudge()) {
 function currentLanguageMode() { return monacoLanguageModes[$("language").value] || "plaintext"; }
 
 const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
-let activeLanguage = defaultLanguageForJudge(localStorage.getItem("pi-oj-judge") || "uva");
+const savedAiState = JSON.parse(localStorage.getItem("pi-oj-ai") || "{}");
+let activeLanguage = defaultLanguageForJudge(effectiveJudge(localStorage.getItem("pi-oj-judge") || "uva"));
 $("judge").value = localStorage.getItem("pi-oj-judge") || "uva";
-renderLanguageOptions(getJudge());
+renderLanguageOptions(effectiveJudge());
 $("code").value = saved[activeLanguage] || templates[activeLanguage] || "";
-$("problemId").value = localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
+$("aiQuestion").value = savedAiState.question || "";
+$("problemId").value = getJudge() === "cpe"
+  ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
+  : localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
 updateJudgeUi();
 const savedTests = JSON.parse(localStorage.getItem("pi-oj-tests") || "{}");
 let activeTestSource = "sample";
 
+function renderCpeStarOptions() {
+  const select = $("cpeStar");
+  const levelSelect = $("cpeLevel");
+  if (!select) return;
+  const groups = window.CPE_STAR_GROUPS || {labels: {}, problems: {}};
+  const level = levelSelect?.value || "must";
+  const problems = groups.problems?.[level] || [];
+  select.replaceChildren();
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = problems.length ? "Select problem..." : "No list loaded";
+  select.appendChild(empty);
+  for (const problem of problems) {
+    const option = document.createElement("option");
+    option.value = String(problem.id || "");
+    option.textContent = [problem.id, problem.title].filter(Boolean).join(" - ");
+    select.appendChild(option);
+  }
+  const savedCpeProblem = localStorage.getItem("pi-oj-problem-id-cpe") || "";
+  if (savedCpeProblem && problems.some((problem) => String(problem.id) === savedCpeProblem)) {
+    select.value = savedCpeProblem;
+  }
+  select.disabled = problems.length === 0;
+  if (levelSelect) {
+    for (const option of levelSelect.options) {
+      const count = groups.problems?.[option.value]?.length || 0;
+      const label = groups.labels?.[option.value] || option.textContent.replace(/\s*\(\d+\)$/, "");
+      option.textContent = count ? `${label} (${count})` : label;
+    }
+  }
+}
+
+function applyCpeStarProblem(problemId) {
+  if (!problemId) return;
+  $("problemId").value = problemId;
+  localStorage.setItem("pi-oj-problem-id-cpe", problemId);
+  localStorage.setItem("pi-oj-problem-id-uva", problemId);
+}
+
+
+
 function getJudge() {
   return $("judge")?.value || "uva";
+}
+
+function effectiveJudge(judge = getJudge()) {
+  return judge === "cpe" ? "uva" : judge;
 }
 
 function codeforcesProblemCode(problemId) {
@@ -233,7 +284,7 @@ function codeforcesProblemCode(problemId) {
 }
 
 function problemUrlForJudge(judge, problemId) {
-  if (judge === "codeforces") {
+  if (effectiveJudge(judge) === "codeforces") {
     const match = problemId.trim().toUpperCase().replace("-", "/").match(/^(\d{1,6})\s*\/?\s*([A-Z][0-9A-Z]?)$/);
     if (!match) return "";
     return `https://codeforces.com/problemset/problem/${match[1]}/${match[2]}`;
@@ -247,13 +298,13 @@ function codeforcesSubmitUrl(problemId) {
 }
 
 function validProblemId(value) {
-  const judge = getJudge();
+  const judge = effectiveJudge();
   if (judge === "codeforces") return /^(\d{1,6})\s*\/?\s*([A-Za-z][0-9A-Za-z]?)$/.test(value.trim());
   return validUvaProblemId(value);
 }
 
 function syncTestSourceOptions() {
-  const allowUdebug = getJudge() === "uva";
+  const allowUdebug = effectiveJudge() === "uva";
   const udebugOption = $("testSource").querySelector('option[value="udebug"]');
   if (udebugOption) udebugOption.hidden = !allowUdebug;
   if (!allowUdebug && $("testSource").value === "udebug") $("testSource").value = "sample";
@@ -262,19 +313,27 @@ function syncTestSourceOptions() {
 function updateJudgeUi() {
   const judge = getJudge();
   const label = $("problemLabel");
-  if (judge === "codeforces") {
-    if (label) label.childNodes[0].textContent = "Codeforces \u984c\u865f ";
+  const isCpe = judge === "cpe";
+  const isCodeforces = judge === "codeforces";
+  if ($("cpeLabel")) $("cpeLabel").hidden = !isCpe;
+  if (label) label.hidden = isCpe;
+  if (isCodeforces) {
+    if (label) label.childNodes[0].textContent = "Codeforces " + "\u984c\u865f" + " ";
     $("problemId").placeholder = "1843A";
     $("pdfToggle").textContent = "\u984c\u76ee\u9801";
-    $("uva").textContent = "\u2191 \u63d0\u4ea4 Codeforces";
+    $("uva").textContent = "\u2191 " + "\u63d0\u4ea4" + " Codeforces";
   } else {
-    if (label) label.childNodes[0].textContent = "UVA \u984c\u865f ";
+    if (label) label.childNodes[0].textContent = "UVA " + "\u984c\u865f" + " ";
     $("problemId").placeholder = "100-1800 / 10000-13400";
     $("pdfToggle").textContent = "\u984c\u76ee PDF";
-    $("uva").textContent = "\u2191 \u63d0\u4ea4 UVA";
+    $("uva").textContent = "\u2191 " + "\u63d0\u4ea4" + " UVA";
   }
   syncTestSourceOptions();
 }
+
+
+
+
 
 const testSourceLabels = {
   sample: ["\u984c\u76ee\u8f38\u5165", "\u984c\u76ee\u8f38\u51fa\uff08\u7a7a\u767d\u6642\u53ea\u57f7\u884c\uff09"],
@@ -309,16 +368,18 @@ function switchTestSource(source, saveCurrent = true) {
   $("inputLabel").textContent = testSourceLabels[source][0];
   $("expectedLabel").textContent = testSourceLabels[source][1];
   $("fetchTests").hidden = !["sample", "ai", "custom"].includes(source);
-  $("fetchTests").textContent = source === "ai" ? "AI \u7522\u751f" : source === "custom" ? "AI \u7b97\u8f38\u51fa" : "\u8f09\u5165";
-  $("openUdebug").hidden = !(source === "udebug" && getJudge() === "uva");
+  $("fetchTests").textContent = source === "ai" ? "AI 產生" : source === "custom" ? "AI 算輸出" : "載入";
+  $("openUdebug").hidden = !(source === "udebug" && effectiveJudge() === "uva");
   localStorage.setItem("pi-oj-test-source", source);
 }
 
+
 function invalidProblemMessage() {
-  return getJudge() === "codeforces"
-    ? "Codeforces \u984c\u865f\u683c\u5f0f\u9700\u50cf 1843A \u6216 1843/A"
-    : "UVA \u984c\u865f\u7bc4\u570d\u9700\u70ba 100\u20131800 \u6216 10000\u201313400";
+  return effectiveJudge() === "codeforces"
+    ? "Codeforces 題號格式需像 1843A 或 1843/A"
+    : "UVA 題號範圍需為 100-1800 或 10000-13400";
 }
+
 
 async function fetchSelectedTests() {
   const problemId = $("problemId").value;
@@ -338,7 +399,7 @@ async function fetchSelectedTests() {
     if (["sample", "udebug"].includes(source)) {
       const queued = await request("/api/tests/fetch", {
         method: "POST",
-        body: JSON.stringify({judge: getJudge(), problem_id: problemId, source}),
+        body: JSON.stringify({judge: effectiveJudge(), problem_id: problemId, source}),
       });
       result = await poll(queued.task_id);
       if (!result || result.status !== "FETCHED") {
@@ -346,7 +407,7 @@ async function fetchSelectedTests() {
       }
     } else if (source === "ai") {
       switchSidePanel("ai");
-      const pageName = getJudge() === "codeforces" ? "Codeforces \u984c\u76ee\u9801" : "UVA PDF";
+      const pageName = effectiveJudge() === "codeforces" ? "Codeforces 題目頁" : "UVA PDF";
       setAiOutput(`AI \u52a9\u6559\u6b63\u5728\u95b1\u8b80 ${pageName}\uff0c\u4e26\u7522\u751f input/output \u6e2c\u8cc7\u2026`);
       const aiResult = await requestAi("tests");
       showAiResult(aiResult);
@@ -411,7 +472,7 @@ async function openProblemPdf() {
   }
 
   const button = $("pdfToggle");
-  const judge = getJudge();
+  const judge = effectiveJudge();
   const statementId = problemId.trim().toUpperCase().replace(/[^0-9A-Z]/g, "");
   const pdfUrl = judge === "codeforces" ? `/api/problems/codeforces/${statementId}/statement` : problemUrlForJudge(judge, problemId);
   button.disabled = true;
@@ -666,6 +727,35 @@ function setVerdict(status, pending = false) {
   el.className = `pill ${pending ? "neutral" : ["AC", "OK", "SUBMITTED", "AI"].includes(status) ? "ok" : "bad"}`;
 }
 
+function saveRunResultState(state) {
+  try {
+    localStorage.setItem(RUN_RESULT_STORAGE_KEY, JSON.stringify({
+      ...state,
+      savedAt: Date.now(),
+    }));
+  } catch (error) {
+    console.warn("儲存執行結果失敗", error);
+  }
+}
+
+function restoreRunResultState() {
+  try {
+    const state = JSON.parse(localStorage.getItem(RUN_RESULT_STORAGE_KEY) || "null");
+    if (!state || !state.result) return;
+
+    lastSubmittedExpectedOutput = state.expectedOutput || "";
+
+    showResult(state.result, {
+      persist: false,
+      testSource: state.testSource || activeTestSource,
+      expectedOutput: state.expectedOutput || "",
+    });
+  } catch (error) {
+    console.warn("還原執行結果失敗", error);
+    localStorage.removeItem(RUN_RESULT_STORAGE_KEY);
+  }
+}
+
 async function request(url, options = {}) {
   const response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
   const data = await response.json();
@@ -688,39 +778,156 @@ function validUvaProblemId(value) {
   return (number >= 100 && number <= 1800) || (number >= 10000 && number <= 13400);
 }
 
-function showResult(result) {
+function showResult(result, options = {}) {
+  const persist = options.persist !== false;
+  const resultTestSource = options.testSource || activeTestSource;
+  const expectedForDiff = options.expectedOutput !== undefined
+    ? options.expectedOutput
+    : (lastSubmittedExpectedOutput || $("expected").value);
+
   lastRunResult = result;
+
+  if (persist) {
+    saveRunResultState({
+      result,
+      testSource: resultTestSource,
+      expectedOutput: expectedForDiff,
+    });
+  }
+
   $("output").classList.remove("ai-output");
   setVerdict(result.status || "SE");
+
   const isUva = Boolean(result.uva_submission_id);
   $("resultMeta").hidden = false;
-  const localSourceNames = {sample: "題目範例", udebug: "uDebug", ai: "AI 測資", custom: "自訂測資"};
+
+  const localSourceNames = {
+    sample: "題目範例",
+    udebug: "uDebug",
+    ai: "AI 測資",
+    custom: "自訂測資",
+  };
+
   $("resultSource").textContent = isUva
     ? `UVA ${result.problem_id || ""}`.trim()
-    : `本機 — ${localSourceNames[activeTestSource]}`;
+    : `本機 — ${localSourceNames[resultTestSource] || resultTestSource}`;
+
   $("resultId").textContent = result.uva_submission_id || result.submission_id || "—";
   $("resultVerdict").textContent = result.verdict || result.status || "—";
   $("resultTime").textContent = result.cpu_time || "—";
+
   $("output").classList.remove("diff-output");
-  const expectedForDiff = lastSubmittedExpectedOutput || $("expected").value;
+
   if (!isUva && result.status === "WA" && expectedForDiff) {
     renderWrongAnswerDiff(result.stdout || "", expectedForDiff, result.message);
     applyDiagnostics(result);
     return;
   }
+
   const parts = [];
   if (result.message) parts.push(result.message);
   if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
   if (result.error_log) parts.push(`error:\n${result.error_log}`);
+
   $("output").textContent = parts.join("\n\n") || JSON.stringify(result, null, 2);
   applyDiagnostics(result);
 }
 
-function setAiOutput(message, isError = false) {
-  const target = $("aiOutput");
-  target.textContent = message;
-  target.classList.toggle("ai-error", isError);
+function sanitizeAiHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const allowedTags = new Set([
+    "A", "BLOCKQUOTE", "BR", "CODE", "DEL", "EM", "H1", "H2", "H3", "H4",
+    "H5", "H6", "HR", "LI", "OL", "P", "PRE", "STRONG", "TABLE", "TBODY",
+    "TD", "TH", "THEAD", "TR", "UL",
+  ]);
+  const allowedAttrs = new Set(["class", "href", "rel", "target"]);
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+  const remove = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!allowedTags.has(node.tagName)) {
+      remove.push(node);
+      continue;
+    }
+    for (const attr of [...node.attributes]) {
+      if (!allowedAttrs.has(attr.name)) {
+        node.removeAttribute(attr.name);
+        continue;
+      }
+      if (attr.name === "href" && !/^(https?:|mailto:|#)/i.test(attr.value)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+    if (node.tagName === "A") {
+      node.target = "_blank";
+      node.rel = "noopener noreferrer";
+    }
+  }
+  for (const node of remove) {
+    node.replaceWith(document.createTextNode(node.textContent || ""));
+  }
+  return template.innerHTML;
 }
+
+function renderAiMath(target) {
+  if (typeof renderMathInElement !== "function") return;
+  renderMathInElement(target, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "\\[", right: "\\]", display: true},
+      {left: "$", right: "$", display: false},
+      {left: "\\(", right: "\\)", display: false},
+    ],
+    ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+    throwOnError: false,
+  });
+}
+
+function renderAiReadable(message, isError = false) {
+  const target = $("aiOutput");
+  target.textContent = "";
+  target.classList.toggle("ai-error", isError);
+  target.classList.toggle("ai-readable", !isError);
+
+  if (!message) {
+    target.textContent = "AI " + "\u56de\u7b54\u6703\u986f\u793a\u5728\u9019\u88e1";
+    return;
+  }
+
+  if (isError || !window.marked) {
+    const pre = document.createElement("pre");
+    pre.textContent = message;
+    target.appendChild(pre);
+    return;
+  }
+
+  const html = marked.parse(String(message).replaceAll("\r\n", "\n").replaceAll("\r", "\n"), {
+    async: false,
+    breaks: true,
+    gfm: true,
+  });
+  target.innerHTML = sanitizeAiHtml(html);
+  renderAiMath(target);
+}
+
+function saveAiState(next = {}) {
+  const state = {
+    question: $("aiQuestion").value,
+    output: savedAiState.output || "",
+    isError: Boolean(savedAiState.isError),
+    ...next,
+  };
+  Object.assign(savedAiState, state);
+  localStorage.setItem("pi-oj-ai", JSON.stringify(state));
+}
+
+function setAiOutput(message, isError = false, persist = true) {
+  renderAiReadable(message, isError);
+  if (persist) saveAiState({output: message || "", isError});
+}
+
+
 
 function parseAiGeneratedTest(message) {
   const inputMatch = message.match(/(?:^|\n)\s*(?:stdin|input)\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
@@ -739,48 +946,63 @@ function parseAiExpectedOutput(message) {
   return expectedMatch[1].replace(/\n$/, "");
 }
 
+function shouldAttachProblemContextForAsk() {
+  const question = $("aiQuestion").value.trim().toLowerCase();
+  if (!question || !validProblemId($("problemId").value)) return false;
+  return /(\bthis\b|current|problem|uva|codeforces|wa|wrong answer|tle|re|ce|debug|output|stdout|stdin|sample|test|case|code|\u9019\u984c|\u984c\u76ee|\u76ee\u524d|\u9019\u4efd|\u7a0b\u5f0f|\u7a0b\u5f0f\u78bc|\u6e2c\u8cc7|\u8f38\u5165|\u8f38\u51fa|\u932f|\u9664\u932f|\u70ba\u4ec0\u9ebc\u932f)/i.test(question);
+}
+
 async function requestAi(mode) {
   const result = lastRunResult || {};
+  const isCustomAsk = mode === "ask";
+  const attachProblem = !isCustomAsk || shouldAttachProblemContextForAsk();
   const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({
     mode,
-    judge: getJudge(),
-    problem_id: $("problemId").value,
+    judge: effectiveJudge(),
+    problem_id: attachProblem ? $("problemId").value.trim() : "",
     language: $("language").value,
-    code: getCode(),
-    input_data: $("input").value,
-    expected_output: $("expected").value,
-    stdout: result.stdout || "",
-    error_log: result.error_log || "",
-    verdict: result.verdict || result.status || "",
+    code: attachProblem ? getCode() : "",
+    input_data: attachProblem ? $("input").value : "",
+    expected_output: attachProblem ? $("expected").value : "",
+    stdout: attachProblem ? (result.stdout || "") : "",
+    error_log: attachProblem ? (result.error_log || "") : "",
+    verdict: attachProblem ? (result.verdict || result.status || "") : "",
     question: $("aiQuestion").value,
   })});
   return poll(queued.task_id);
 }
 
 function showAiResult(result) {
-  const aiModeNames = {hint: "AI 提示", debug: "AI 除錯", translate: "AI 翻譯", tests: "AI 測資"};
-  const title = aiModeNames[result.mode] || "AI";
+  const aiModeNames = {hint: "AI \u63d0\u793a", debug: "AI \u9664\u932f", translate: "AI \u7ffb\u8b6f", tests: "AI \u6e2c\u8cc7", expected: "AI \u8f38\u51fa\u8a08\u7b97", ask: "AI \u56de\u7b54"};
+  const title = aiModeNames[result.mode] || "AI \u56de\u7b54";
   const meta = [result.provider, result.model].filter(Boolean).join(" / ");
-  const parts = [`${title}${meta ? ` (${meta})` : ""}`];
+  const parts = [`# ${title}${meta ? ` (${meta})` : ""}`];
   if (result.message) parts.push(result.message);
-  if (result.error_log) parts.push(`error:\n${result.error_log}`);
+  if (result.error_log) parts.push(`error:\n\`\`\`text\n${result.error_log}\n\`\`\``);
   setAiOutput(parts.join("\n\n") || JSON.stringify(result, null, 2), result.status === "SE");
 }
 
 async function askAi(mode) {
-  if (!validProblemId($("problemId").value)) {
-    toast("請先輸入合法的 UVA 題號，AI 助教需要知道是哪一題");
+  if (mode !== "ask" && !validProblemId($("problemId").value)) {
+    toast(invalidProblemMessage() + "\uff0cAI \u52a9\u6559\u9700\u8981\u77e5\u9053\u662f\u54ea\u4e00\u984c");
     return;
   }
-  const buttons = {hint: $("aiHint"), debug: $("aiDebug"), translate: $("aiTranslate")};
-  const button = buttons[mode] || $("aiHint");
+  if (mode === "ask" && !$("aiQuestion").value.trim()) {
+    toast("\u8acb\u5148\u8f38\u5165\u60f3\u554f AI \u7684\u5167\u5bb9");
+    $("aiQuestion").focus();
+    return;
+  }
+  const buttons = {ask: $("aiAsk"), hint: $("aiHint"), debug: $("aiDebug"), translate: $("aiTranslate")};
+  const button = buttons[mode] || $("aiAsk");
   button.disabled = true;
+  const pageName = effectiveJudge() === "codeforces" ? "Codeforces \u984c\u76ee\u9801" : "UVA PDF";
   const waitingMessages = {
-    translate: "AI 助教正在讀取 UVA PDF 並翻譯題目…",
-    hint: "AI 助教正在閱讀題號與程式碼…",
-    debug: "AI 助教正在閱讀測試結果與程式碼…",
+    ask: "AI \u52a9\u6559\u6b63\u5728\u56de\u7b54\u4f60\u7684\u554f\u984c...",
+    translate: `AI \u52a9\u6559\u6b63\u5728\u8b80\u53d6 ${pageName} \u4e26\u7ffb\u8b6f\u984c\u76ee...`,
+    hint: "AI \u52a9\u6559\u6b63\u5728\u95b1\u8b80\u984c\u865f\u8207\u7a0b\u5f0f\u78bc...",
+    debug: "AI \u52a9\u6559\u6b63\u5728\u95b1\u8b80\u6e2c\u8a66\u7d50\u679c\u8207\u7a0b\u5f0f\u78bc...",
   };
-  setAiOutput(waitingMessages[mode] || "AI 助教正在思考…");
+  setAiOutput(waitingMessages[mode] || "AI \u52a9\u6559\u6b63\u5728\u601d\u8003...");
 
   try {
     switchSidePanel("ai");
@@ -792,6 +1014,8 @@ async function askAi(mode) {
     button.disabled = false;
   }
 }
+
+
 
 function normalizeDiffText(value) {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\s+$/, "");
@@ -870,9 +1094,9 @@ async function execute(kind) {
       })});
     } else {
       if (!validProblemId($("problemId").value)) {
-        throw new Error(getJudge() === "codeforces" ? "Codeforces \u984c\u865f\u683c\u5f0f\u9700\u50cf 1843A \u6216 1843/A" : "UVA \u984c\u865f\u7bc4\u570d\u9700\u70ba 100\u20131800 \u6216 10000\u201313400");
+        throw new Error(invalidProblemMessage());
       }
-      if (getJudge() === "codeforces") {
+      if (effectiveJudge() === "codeforces") {
         if (!confirm(`Codeforces \u6703\u64cb\u4f3a\u670d\u5668\u81ea\u52d5\u767b\u5165\u3002\u8981\u8907\u88fd\u7a0b\u5f0f\u78bc\u4e26\u958b\u555f Codeforces \u63d0\u4ea4\u9801\u55ce\uff1f`)) return;
         try {
           await navigator.clipboard.writeText(getCode());
@@ -888,7 +1112,7 @@ async function execute(kind) {
       }
       if (!confirm(`\u78ba\u5b9a\u8981\u63d0\u4ea4\u76ee\u524d\u7a0b\u5f0f\u78bc\u5230 UVA ${$("problemId").value}\uff1f`)) return;
       response = await request("/api/uva/submit", {method: "POST", body: JSON.stringify({
-        judge: getJudge(),
+        judge: effectiveJudge(),
         problem_id: $("problemId").value,
         language: $("language").value,
         code: getCode(),
@@ -920,9 +1144,9 @@ $("testTab").addEventListener("click", () => switchSidePanel("test"));
 $("aiTab").addEventListener("click", () => switchSidePanel("ai"));
 $("language").addEventListener("change", (event) => {
   saved[activeLanguage] = getCode();
-  activeLanguage = normalizeLanguage(event.target.value);
+  activeLanguage = normalizeLanguage(event.target.value, effectiveJudge());
   event.target.value = activeLanguage;
-  localStorage.setItem(languageStorageKey(), activeLanguage);
+  localStorage.setItem(languageStorageKey(effectiveJudge()), activeLanguage);
   setCode(saved[activeLanguage] || templates[activeLanguage] || "");
   if (codeEditor && window.monaco) {
     monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
@@ -933,19 +1157,24 @@ $("testSource").addEventListener("change", (event) => switchTestSource(event.tar
 $("judge").addEventListener("change", () => {
   saved[activeLanguage] = getCode();
   localStorage.setItem("pi-oj-judge", getJudge());
-  renderLanguageOptions(getJudge());
+  renderLanguageOptions(effectiveJudge());
   setCode(saved[activeLanguage] || templates[activeLanguage] || "");
   if (codeEditor && window.monaco) monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
-  $("problemId").value = localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
+  $("problemId").value = getJudge() === "cpe"
+    ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
+    : localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
   updateJudgeUi();
   switchTestSource($("testSource").value);
 });
 $("problemId").addEventListener("input", (event) => {
   localStorage.setItem(`pi-oj-problem-id-${getJudge()}`, event.target.value.trim());
 });
+$("cpeLevel").addEventListener("change", () => renderCpeStarOptions());
+$("cpeStar").addEventListener("change", (event) => applyCpeStarProblem(event.target.value));
 $("fetchTests").addEventListener("click", fetchSelectedTests);
 $("input").addEventListener("input", saveActiveTest);
 $("expected").addEventListener("input", saveActiveTest);
+$("aiQuestion").addEventListener("input", () => saveAiState());
 $("openUdebug").addEventListener("click", () => {
   const problemId = $("problemId").value;
   if (!validProblemId(problemId)) {
@@ -966,6 +1195,7 @@ $("code").addEventListener("keydown", (event) => {
   }
 });
 $("run").addEventListener("click", () => execute("run"));
+$("aiAsk").addEventListener("click", () => askAi("ask"));
 $("aiHint").addEventListener("click", () => askAi("hint"));
 $("aiDebug").addEventListener("click", () => askAi("debug"));
 $("aiTranslate").addEventListener("click", () => askAi("translate"));
@@ -979,12 +1209,18 @@ $("themeToggle").addEventListener("click", () => {
   localStorage.setItem("pi-oj-theme", next);
 });
 
+if (savedAiState.output) {
+  setAiOutput(savedAiState.output, Boolean(savedAiState.isError), false);
+}
+
+renderCpeStarOptions();
 initializeMonaco();
 const initialTestSource = ["sample", "udebug", "ai", "custom"].includes(localStorage.getItem("pi-oj-test-source")) ? localStorage.getItem("pi-oj-test-source") : "sample";
 $("testSource").value = testSourceLabels[initialTestSource] ? initialTestSource : "sample";
 syncTestSourceOptions();
 switchTestSource($("testSource").value, false);
 switchSidePanel(localStorage.getItem("pi-oj-side-panel") === "ai" ? "ai" : "test");
+restoreRunResultState();
 
 fetch("/api/health").then((r) => r.json()).then(() => {
   $("health").textContent = "Online";

@@ -297,6 +297,43 @@ def build_ai_prompt(
     question: str,
     problem_statement: str = "",
 ) -> str:
+    judge_name = "Codeforces" if (judge or "uva").lower() == "codeforces" else "UVA"
+    common_context = f"""Online judge: {judge_name}
+Problem: {problem_id or "not provided"}
+Language: {language}
+Verdict: {verdict or "not run yet"}
+
+User question:
+```text
+{truncate_context(question, 4_000) or "(none)"}
+```
+
+Current code:
+```{language}
+{truncate_context(code)}
+```
+
+stdin:
+```text
+{truncate_context(input_data)}
+```
+
+expected stdout:
+```text
+{truncate_context(expected_output)}
+```
+
+actual stdout:
+```text
+{truncate_context(stdout)}
+```
+
+error log:
+```text
+{truncate_context(error_log, 6_000)}
+```
+"""
+
     if mode == "translate":
         return f"""You are translating an online judge problem statement for a Traditional Chinese reader.
 
@@ -307,7 +344,7 @@ Task:
 - If the statement contains input/output format details, make them easy to understand.
 - If the user wrote an extra question, answer only if it is about understanding the statement.
 
-Online judge: {judge}
+Online judge: {judge_name}
 Problem: {problem_id}
 User question:
 ```text
@@ -325,21 +362,19 @@ Problem statement extracted from the judge page:
 
 Task:
 - Answer in Traditional Chinese.
-- DO NOT create new input. Use the provided stdin exactly as-is.
+- Do not create new input. Use the provided stdin exactly as-is.
 - Compute the exact expected stdout for that stdin according to the online judge problem statement.
 - Do not provide a full accepted solution or code.
 - If the stdin is invalid for the problem, explain the issue instead of inventing output.
 - If you cannot confidently compute the output, say so clearly instead of guessing.
 
-Required output format. Put this fenced block first, before any explanation:
+Required output format. Put this fenced block first:
 expected stdout:
 ```text
 ...
 ```
 
-After the block, add a short Traditional Chinese note only if useful.
-
-Online judge: {judge}
+Online judge: {judge_name}
 Problem: {problem_id}
 User-provided stdin:
 ```text
@@ -348,7 +383,7 @@ User-provided stdin:
 
 User request:
 ```text
-{truncate_context(question, 4_000) or "使用者未提供額外問題，只要求計算 stdin 的標準輸出"}
+{truncate_context(question, 4_000) or "Please compute the expected stdout for this stdin."}
 ```
 
 Problem statement extracted from the judge page:
@@ -362,13 +397,13 @@ Problem statement extracted from the judge page:
 
 Task:
 - Answer in Traditional Chinese.
-- Create ONE combined local test input and its exact expected stdout, suitable for pasting directly into the app's stdin / expected stdout boxes.
-- Prefer edge cases and bug-hunting cases. If the user asks for random tests, include small random-style cases whose outputs you can compute confidently.
+- Create one combined local test input and its exact expected stdout.
+- Prefer edge cases and bug-hunting cases.
 - Keep the generated test small enough to inspect by hand.
 - Do not provide a full accepted solution or code.
 - If you cannot confidently compute expected output, say so instead of inventing one.
 
-Required output format. Put these two fenced blocks first, before any explanation:
+Required output format. Put these two fenced blocks first:
 stdin:
 ```text
 ...
@@ -378,13 +413,11 @@ expected stdout:
 ...
 ```
 
-After the two blocks, add a short Traditional Chinese note explaining what the test is meant to catch.
-
-Online judge: {judge}
+Online judge: {judge_name}
 Problem: {problem_id}
 User request:
 ```text
-{truncate_context(question, 4_000) or "請產生容易測出錯誤的本機測資"}
+{truncate_context(question, 4_000) or "Please generate one bug-catching test case."}
 ```
 
 Problem statement extracted from the judge page:
@@ -398,60 +431,44 @@ Current code, for bug-focused tests only:
 ```
 """
 
+    if mode == "ask":
+        return f"""You are an Online Judge programming tutor. Answer the user's custom prompt in Traditional Chinese.
+
+Rules:
+- Answer the user's custom prompt directly; do not apply the hint/debug/translation templates.
+- The user's question has priority over the current problem context.
+- If the user asks a general programming or algorithm question, answer only that question.
+- Do not mention, compare with, or analyze the current online judge problem unless the user explicitly asks about the current problem, their code, a verdict, stdin/stdout, sample tests, or debugging.
+- Use the current problem, code, input, output, and error log only when the user's words clearly need that context.
+- If the user asks for a template, provide a compact reusable code template and a short explanation.
+- Do not start with greetings or self-introduction.
+- Prefer this structure when suitable: short definition, when to use it, template, common pitfalls.
+- Put code templates in fenced code blocks.
+- Do not reveal a full accepted solution unless the user explicitly asks for it; prefer explanation and next steps.
+- Format the answer with short sections or bullets for readability.
+
+Optional context. Ignore this section unless it is clearly relevant:
+{common_context}
+"""
+
     if mode == "hint":
-        mode_instruction = """你現在是「解題提示」模式。
-- 優先說明題意、輸入輸出格式、核心觀察、可用資料結構或演算法方向。
-- 不要根據目前程式逐行改錯，除非使用者問題明確要求。
-- 回答格式請用：1. 題意整理 2. 關鍵想法 3. 常見陷阱 4. 下一步。"""
+        instruction = """Help the user understand the problem and find a solution direction.
+- Mention the likely core observation or algorithm.
+- Include useful complexity or data structure hints.
+- Do not provide a full accepted solution.
+- Suggested structure: statement summary, idea, traps, next step."""
     else:
-        mode_instruction = """你現在是「除錯協助」模式。
-- 優先根據目前 verdict、stdout、expected stdout、error log、程式碼找錯。
-- 請指出最可疑的 1 到 3 個錯誤位置或邏輯問題。
-- 回答格式請用：1. 觀察到的差異 2. 最可能原因 3. 建議修改方向 4. 建議測資。
-- 不要重講完整題解，除非那是錯誤根因。"""
+        instruction = """Help the user debug the current program.
+- Prioritize verdict, stdout, expected stdout, error log, and code.
+- Point out the most likely 1 to 3 causes.
+- Suggest targeted tests or variables to inspect.
+- Do not rewrite the whole accepted solution."""
 
-    return f"""你是 Online Judge 的 AI 助教。請用繁體中文回答，重點清楚、不要冗長。
+    return f"""You are an Online Judge programming tutor. Answer in Traditional Chinese, clearly and concisely.
 
-{mode_instruction}
+{instruction}
 
-UVA 題號：{problem_id or "未填"}
-語言：{language}
-目前 verdict：{verdict or "尚未執行"}
-使用者問題：
-```text
-{truncate_context(question, 4_000) or "（未填）"}
-```
-
-規則：
-- 不要直接提供完整 AC 程式碼。
-- 可以指出觀念、演算法方向、邊界條件、輸入格式陷阱。
-- 如果使用者問題很具體，優先回答使用者問題。
-- 如果資訊不足，請列出下一步應該測什麼。
-
-程式碼：
-```{language}
-{truncate_context(code)}
-```
-
-stdin：
-```text
-{truncate_context(input_data)}
-```
-
-標準輸出 expected stdout：
-```text
-{truncate_context(expected_output)}
-```
-
-目前程式輸出 stdout：
-```text
-{truncate_context(stdout)}
-```
-
-錯誤訊息 error log：
-```text
-{truncate_context(error_log, 6_000)}
-```
+{common_context}
 """
 
 
@@ -1583,10 +1600,9 @@ def ask_ai_helper_task(
             action = "題目翻譯" if mode == "translate" else "AI 助教"
             return {
                 "status": "SE",
-                "message": f"{action}無法讀取題目頁，請確認題號、網路或題目頁格式。",
+                "message": f"{action}無法讀取題目頁，請檢查題號、網站連線或稍後再試。",
                 "error_log": f"{type(exc).__name__}: {exc}",
             }
-
 
     prompt = build_ai_prompt(
         mode=mode,

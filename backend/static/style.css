@@ -33,9 +33,17 @@
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
   background: var(--page);
   color: var(--text);
   transition: background-color .2s ease, color .2s ease;
@@ -58,16 +66,18 @@ header > div:first-child span { margin-left: 11px; color: var(--muted); font-siz
 
 main {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr);
+  grid-template-columns: minmax(0, 3fr) minmax(420px, 2fr);
   gap: 14px;
   padding: 14px;
   height: calc(100vh - 66px);
+  min-height: 0;
   max-width: 1600px;
   margin: 0 auto;
+  overflow: hidden;
 }
 
 main.pdf-open {
-  grid-template-columns: minmax(0, 1fr) minmax(480px, .95fr);
+  grid-template-columns: minmax(0, 3fr) minmax(480px, 2fr);
 }
 
 .workspace, .panel {
@@ -111,6 +121,13 @@ select, input, button {
 
 input { width: 125px; }
 #problemId { width: 190px; }
+.cpe-picker {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+.cpe-picker select { width: 190px; }
+.cpe-picker label:first-child select { width: 120px; }
 button { cursor: pointer; font-size: 12px; font-weight: 700; }
 button:hover { border-color: var(--accent); color: var(--accent); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -185,6 +202,7 @@ button.primary:hover { background: var(--accent-hover); color: #fff; }
 aside {
   position: relative;
   min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
@@ -379,6 +397,112 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
   font: 15px/1.8 ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
+.ai-readable {
+  white-space: normal;
+  display: block;
+}
+
+.ai-readable h1,
+.ai-readable h2,
+.ai-readable h3,
+.ai-readable h4 {
+  margin: 22px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.ai-readable h1 { font-size: 20px; }
+.ai-readable h2 { font-size: 18px; }
+.ai-readable h3 { font-size: 16px; }
+.ai-readable h4 { font-size: 15px; }
+.ai-readable h1:first-child,
+.ai-readable h2:first-child,
+.ai-readable h3:first-child,
+.ai-readable h4:first-child { margin-top: 0; }
+
+.ai-readable p {
+  margin: 0 0 14px;
+  max-width: 82ch;
+  color: var(--text);
+}
+
+.ai-readable strong {
+  font-weight: 800;
+}
+
+.ai-readable code {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-soft);
+  padding: 1px 5px;
+  color: var(--code);
+  font: 13px/1.45 "Cascadia Code", Consolas, monospace;
+}
+
+.ai-readable hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.ai-readable ul,
+.ai-readable ol {
+  margin: 0 0 14px 0;
+  padding-left: 24px;
+  max-width: 82ch;
+}
+
+.ai-readable li {
+  margin: 0 0 8px;
+  padding-left: 3px;
+}
+
+.ai-readable blockquote {
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+
+.ai-readable pre {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 12px;
+  background: var(--surface-soft);
+  font: 13px/1.55 "Cascadia Code", Consolas, monospace;
+  white-space: pre;
+}
+
+.ai-readable table {
+  width: 100%;
+  margin: 12px 0 16px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.ai-readable th,
+.ai-readable td {
+  border: 1px solid var(--line);
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ai-readable th {
+  background: var(--surface-soft);
+  font-weight: 800;
+}
+
+.ai-readable .katex {
+  font-size: 1.03em;
+}
+
 .ai-error {
   color: #a43930;
 }
@@ -475,9 +599,13 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
 
 @media (max-width: 850px) {
   header > div:first-child span { display: none; }
-  main { height: auto; grid-template-columns: 1fr; }
-  .workspace { height: 65vh; }
-  aside { min-height: 75vh; }
+  main {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+    height: calc(100vh - 66px);
+  }
+  .workspace { min-height: 0; }
+  aside { min-height: 0; }
   main.pdf-open { grid-template-columns: 1fr; }
   button.primary { margin-left: 0; }
 }

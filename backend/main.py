@@ -59,7 +59,7 @@ class RunRequest(BaseModel):
 class AiHelpRequest(BaseModel):
     mode: str
     judge: str = Field(default="uva")
-    problem_id: str = Field(min_length=1, max_length=32)
+    problem_id: str = Field(default="", max_length=32)
     language: str
     code: str = Field(default="", max_length=100_000)
     input_data: str = Field(default="", max_length=100_000)
@@ -72,8 +72,8 @@ class AiHelpRequest(BaseModel):
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, value: str) -> str:
-        if value not in {"hint", "debug", "translate", "tests", "expected"}:
-            raise ValueError("mode must be hint, debug, translate, tests, or expected")
+        if value not in {"hint", "debug", "translate", "tests", "expected", "ask"}:
+            raise ValueError("mode must be hint, debug, translate, tests, expected, or ask")
         return value
 
     @field_validator("judge")
@@ -82,6 +82,9 @@ class AiHelpRequest(BaseModel):
         return normalize_judge(value)
 
     def model_post_init(self, __context) -> None:
+        if self.mode == "ask":
+            self.problem_id = self.problem_id.strip()
+            return
         self.problem_id = normalize_problem_id_for_judge(self.judge, self.problem_id)
 
 

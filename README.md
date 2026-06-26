@@ -11,6 +11,7 @@ Pi OJ is a lightweight online judge workspace for Raspberry Pi 5. It provides a 
 - Wrong Answer diff table for local tests
 - ngrok-friendly private access
 - Judge-specific language lists
+- CPE star problem picker grouped by level
 
 ## Quick Start
 
@@ -143,6 +144,16 @@ Because language runtimes live in the judge image, rebuild it after changing `Do
 docker compose build judge-image web worker
 docker compose up -d --force-recreate web worker
 ```
+
+## CPE Star Problems
+
+The CPE picker is grouped by required / 1-star / 2-star / 3-star / 4-star / 5-star lists.
+
+Problem references are based on YuiHuang's CPE collection:
+
+- https://yuihuang.com/cpe/
+
+The original CPE environment page can still be used as the authority when the list changes.
 
 ## AI Helper
 
