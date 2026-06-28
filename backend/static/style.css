@@ -66,18 +66,18 @@ header > div:first-child span { margin-left: 11px; color: var(--muted); font-siz
 
 main {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(420px, 2fr);
+  grid-template-columns: minmax(0, 7fr) minmax(430px, 4fr);
   gap: 14px;
   padding: 14px;
   height: calc(100vh - 66px);
   min-height: 0;
-  max-width: 1600px;
+  max-width: 1720px;
   margin: 0 auto;
   overflow: hidden;
 }
 
 main.pdf-open {
-  grid-template-columns: minmax(0, 3fr) minmax(480px, 2fr);
+  grid-template-columns: minmax(0, 7fr) minmax(480px, 4fr);
 }
 
 .workspace, .panel {
@@ -120,14 +120,21 @@ select, input, button {
 }
 
 input { width: 125px; }
-#problemId { width: 190px; }
+#judge { width: 108px; }
+#compilerMode { width: 112px; }
+#language { width: 142px; }
+#pdfToggle { display: none; }
+#problemId { width: 150px; }
 .cpe-picker {
   display: flex;
   gap: 8px;
   align-items: end;
 }
-.cpe-picker select { width: 190px; }
-.cpe-picker label:first-child select { width: 120px; }
+.cpe-picker select {
+  width: 158px;
+  text-overflow: ellipsis;
+}
+.cpe-picker label:first-child select { width: 104px; }
 button { cursor: pointer; font-size: 12px; font-weight: 700; }
 button:hover { border-color: var(--accent); color: var(--accent); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -143,6 +150,50 @@ button.primary {
 :root[data-theme="dark"] button.primary { color: #102019; }
 button.primary:hover { background: var(--accent-hover); color: #fff; }
 
+button.submit-warning,
+#uva {
+  border-color: #b9770e;
+  background: #fff8e6;
+  color: #875300;
+}
+
+button.submit-warning:hover,
+#uva:hover {
+  border-color: #9a5b00;
+  background: #ffe2a6;
+  color: #5f3a00;
+}
+
+:root[data-theme="dark"] button.submit-warning,
+:root[data-theme="dark"] #uva {
+  border-color: #c38a23;
+  background: #4a3412;
+  color: #ffd58a;
+}
+
+.vim-toggle {
+  min-width: 76px;
+  padding: 0 12px;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--surface)), color-mix(in srgb, var(--accent) 6%, var(--surface-soft)));
+  color: var(--accent-hover);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%);
+}
+
+.vim-toggle[aria-pressed="true"] {
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  border-color: var(--accent-hover);
+  color: #fff;
+}
+
+:root[data-theme="dark"] .vim-toggle {
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+}
+
+:root[data-theme="dark"] .vim-toggle[aria-pressed="true"] { color: #102019; }
+
 .theme-toggle {
   height: 32px;
   display: inline-flex;
@@ -151,13 +202,62 @@ button.primary:hover { background: var(--accent-hover); color: #fff; }
   background: var(--surface-soft);
 }
 
+.exam-entry {
+  height: 32px;
+  border-color: var(--accent);
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  color: #fff;
+  padding: 0 12px;
+}
+
+.exam-entry:hover {
+  color: #fff;
+  filter: brightness(1.05);
+}
+
+:root[data-theme="dark"] .exam-entry { color: #102019; }
+
 #themeIcon { color: var(--text); font-size: 9px; }
 .editor-label { padding: 10px 14px 0; }
 
 #editor {
   flex: 1;
   min-height: 0;
+  position: relative;
+  overflow: hidden;
   background: var(--surface);
+}
+
+body:not(.monaco-ready):not(.monaco-failed) #editor::before {
+  content: "\8f09\5165\7de8\8f2f\5668\2026";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  color: var(--muted);
+  font: 700 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+body:not(.monaco-ready):not(.monaco-failed) #editor .monaco-editor {
+  opacity: 0;
+}
+
+#editor .monaco-editor textarea,
+#editor .monaco-editor .inputarea {
+  opacity: 0 !important;
+  color: transparent !important;
+  background: transparent !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  resize: none !important;
+}
+
+.monaco-ready #editor .monaco-editor {
+  opacity: 1;
+  transition: opacity .12s ease;
 }
 
 .editor-fallback { display: none; }
@@ -166,13 +266,16 @@ button.primary:hover { background: var(--accent-hover); color: #fff; }
 .monaco-failed .editor-fallback {
   display: block;
   flex: 1;
+  width: 100%;
   min-height: 0;
-}
-
-.vim-toggle[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
+  padding: 14px;
+  border: 0;
+  border-radius: 0;
+  resize: none;
+  outline: none;
+  background: var(--surface);
+  color: var(--code);
+  font: 14px/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
 
 .vim-status {
@@ -210,7 +313,7 @@ aside {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
   padding: 7px;
   border: 1px solid var(--line);
@@ -271,6 +374,13 @@ aside {
   box-shadow: var(--shadow);
 }
 
+.pdf-pane.expanded {
+  position: fixed;
+  inset: 18px;
+  z-index: 60;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 24%);
+}
+
 .pdf-pane[hidden] { display: none; }
 
 .pdf-toolbar {
@@ -286,6 +396,11 @@ aside {
 .pdf-toolbar strong { margin-right: auto; font-size: 12px; }
 .pdf-toolbar a { color: var(--accent); font-size: 11px; font-weight: 700; text-decoration: none; }
 .pdf-toolbar a:hover { text-decoration: underline; }
+.pdf-toolbar button {
+  height: 31px;
+  padding: 0 9px;
+  font-size: 11px;
+}
 
 #problemPdf {
   width: 100%;
@@ -343,11 +458,12 @@ aside {
 pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13px/1.55 monospace; color: var(--code); }
 
 .ai-header {
-  padding: 10px 12px;
+  min-height: 40px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-soft);
   display: flex;
-  align-items: end;
+  align-items: center;
   gap: 10px;
 }
 
@@ -366,8 +482,8 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
 }
 
 .ai-actions button {
-  height: 31px;
-  padding: 0 9px;
+  height: 30px;
+  padding: 0 8px;
 }
 
 .ai-panel textarea {
@@ -400,6 +516,17 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
 .ai-readable {
   white-space: normal;
   display: block;
+}
+
+.ai-empty {
+  display: inline-block;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px 14px;
+  color: var(--text);
+  font: 13px/1.5 "Cascadia Code", Consolas, monospace;
 }
 
 .ai-readable h1,

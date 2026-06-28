@@ -4,14 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pi OJ</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/static/vendor/monaco/vs/loader.js?v=0.55.1" as="script">
+  <link rel="prefetch" href="/static/vendor/monaco/vs/editor/editor.main.js">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=0.16.22">
-  <link rel="stylesheet" href="/static/style.css?v=22">
+  <link rel="stylesheet" href="/static/style.css?v=33">
 </head>
 <body>
   <header>
     <div><strong>Pi OJ</strong><span>Raspberry Pi Online Judge</span></div>
     <div class="header-actions">
       <span id="health" class="pill">檢查中...</span>
+      <button id="cpeExamOpen" class="exam-entry" type="button">CPE 考試</button>
       <button id="themeToggle" class="theme-toggle" type="button" aria-label="切換深色模式">
         <span id="themeIcon" aria-hidden="true">☾</span>
         <span id="themeLabel">深色</span>
@@ -22,6 +26,21 @@
   <main>
     <section class="workspace">
       <div class="toolbar">
+        <button id="vimToggle" class="vim-toggle" type="button" aria-pressed="false" disabled>Vim OFF</button>
+        <label>平台
+          <select id="judge">
+            <option value="uva">UVA</option>
+            <option value="codeforces">Codeforces</option>
+            <option value="cpe">CPE 星題</option>
+          </select>
+        </label>
+        <label id="compilerModeLabel">編譯器
+          <select id="compilerMode">
+            <option value="oj">OJ 編譯器</option>
+            <option value="exam">考試編譯器</option>
+            <option value="simple">簡易編譯器</option>
+          </select>
+        </label>
         <label>語言
           <select id="language">
             <option value="uva_c">ANSI C 5.3.0</option>
@@ -31,35 +50,29 @@
             <option value="uva_py3">PYTH3 3.5.1</option>
           </select>
         </label>
-        <label>平台
-          <select id="judge">
-            <option value="uva">UVA</option>
-            <option value="codeforces">Codeforces</option>
-            <option value="cpe">CPE 星題</option>
-          </select>
+        <label id="problemLabel">UVA 題號
+          <input id="problemId" inputmode="text" maxlength="32" placeholder="100-1800 / 10000-13400">
         </label>
-        <label id="problemLabel">UVA 題號 <input id="problemId" inputmode="text" maxlength="32" placeholder="100-1800 / 10000-13400"></label>
         <div id="cpeLabel" class="cpe-picker" hidden>
           <label>CPE 星等
             <select id="cpeLevel">
-              <option value="must">Must 49</option>
-              <option value="star1">1-star</option>
-              <option value="star2">2-star</option>
-              <option value="star3">3-star</option>
-              <option value="star4">4-star</option>
-              <option value="star5">5-star</option>
+              <option value="must">必考</option>
+              <option value="star1">★</option>
+              <option value="star2">★★</option>
+              <option value="star3">★★★</option>
+              <option value="star4">★★★★</option>
+              <option value="star5">★★★★★</option>
             </select>
           </label>
           <label>CPE 題目
             <select id="cpeStar">
-              <option value="">Select problem...</option>
+              <option value="">選擇題目...</option>
             </select>
           </label>
         </div>
-        <button id="vimToggle" class="vim-toggle" type="button" aria-pressed="false" disabled>Vim OFF</button>
-        <button id="pdfToggle" type="button">題目頁</button>
-        <button id="run" class="primary" type="button">▶ 執行測試</button>
-        <button id="uva" type="button">⇧ 提交 UVA</button>
+        <button id="pdfToggle" type="button">題目 PDF</button>
+        <button id="run" class="primary" type="button">執行測試</button>
+        <button id="uva" type="button">提交 UVA</button>
       </div>
       <label class="editor-label">程式碼</label>
       <div id="editor" aria-label="程式碼編輯器"></div>
@@ -68,9 +81,10 @@
     </section>
 
     <aside>
-      <div class="side-tabs" role="tablist" aria-label="側邊面板">
+      <div class="side-tabs" role="tablist" aria-label="工具面板">
         <button id="testTab" class="side-tab active" type="button" role="tab" aria-selected="true" aria-controls="testPanel">測試</button>
-        <button id="aiTab" class="side-tab" type="button" role="tab" aria-selected="false" aria-controls="aiPanel">AI 助教</button>
+        <button id="pdfTab" class="side-tab" type="button" role="tab" aria-selected="false" aria-controls="pdfPane">題目 PDF</button>
+        <button id="aiTab" class="side-tab" type="button" role="tab" aria-selected="false" aria-controls="aiPanel">AI 助手</button>
       </div>
 
       <section id="testPanel" class="side-panel active" role="tabpanel" aria-labelledby="testTab">
@@ -79,7 +93,7 @@
             <select id="testSource">
               <option value="sample">題目範例</option>
               <option value="udebug">uDebug</option>
-              <option value="ai">AI</option>
+              <option value="ai">AI 測資</option>
               <option value="custom">自訂</option>
             </select>
           </label>
@@ -109,7 +123,7 @@
 
       <section id="aiPanel" class="side-panel ai-panel" role="tabpanel" aria-labelledby="aiTab" hidden>
         <div class="ai-header">
-          <label for="aiQuestion">AI 助教</label>
+          <label for="aiQuestion">AI 助手</label>
           <div class="ai-actions">
             <button id="aiAsk" class="primary" type="button">送出</button>
             <button id="aiHint" type="button">提示</button>
@@ -117,17 +131,18 @@
             <button id="aiTranslate" type="button">翻譯</button>
           </div>
         </div>
-        <textarea id="aiQuestion" placeholder="直接問 AI，例如：Prim 演算法是什麼？給我模板。若要針對目前題目或程式碼，請在問題中提到這題、程式碼、輸入輸出或錯誤。"></textarea>
+        <textarea id="aiQuestion" placeholder="問 AI，例如：Prim 演算法是什麼？給我模板。"></textarea>
         <div id="aiOutput" class="ai-output ai-readable">AI 回答會顯示在這裡</div>
       </section>
 
       <div id="pdfPane" class="pdf-pane" hidden>
         <div class="pdf-toolbar">
-          <strong id="pdfTitle">題目頁</strong>
-          <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">開新分頁</a>
+          <strong id="pdfTitle">題目 PDF</strong>
+          <button id="expandPdf" type="button">放大閱讀</button>
+          <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
           <button id="closePdf" type="button">關閉</button>
         </div>
-        <iframe id="problemPdf" title="題目頁"></iframe>
+        <iframe id="problemPdf" title="題目 PDF"></iframe>
       </div>
     </aside>
   </main>
@@ -136,8 +151,7 @@
   <script src="/static/vendor/marked.umd.js?v=15.0.12"></script>
   <script src="/static/vendor/katex/katex.min.js?v=0.16.22"></script>
   <script src="/static/vendor/katex/auto-render.min.js?v=0.16.22"></script>
-  <script src="/static/cpe-stars.js?v=4"></script>
-  <script src="/static/app.js?v=55"></script>
+  <script src="/static/cpe-stars.js?v=5"></script>
+  <script src="/static/app.js?v=72"></script>
 </body>
 </html>
-

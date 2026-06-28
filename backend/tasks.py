@@ -4,7 +4,7 @@ import shutil
 import time
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import docker
 import requests
@@ -30,6 +30,81 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/response
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 GEMINI_API_URL = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+STDOUT_CAPTURE_LIMIT = int(os.getenv("OJ_STDOUT_CAPTURE_LIMIT", "120000"))
+STDERR_CAPTURE_LIMIT = int(os.getenv("OJ_STDERR_CAPTURE_LIMIT", "40000"))
+DEFAULT_RUN_MEM_LIMIT = os.getenv("OJ_DEFAULT_MEM_LIMIT", "128m")
+JAVA_RUN_MEM_LIMIT = os.getenv("OJ_JAVA_MEM_LIMIT", "384m")
+
+RUNNER_WRAPPER = r"""#!/usr/bin/env python3
+import os
+import selectors
+import subprocess
+import sys
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    stdout_limit = int(os.environ.get("OJ_STDOUT_CAPTURE_LIMIT", "120000"))
+    stderr_limit = int(os.environ.get("OJ_STDERR_CAPTURE_LIMIT", "40000"))
+    if "--" in args:
+        sep = args.index("--")
+        cmd = args[sep + 1:]
+    else:
+        cmd = args
+    if not cmd:
+        open(".stderr", "wb").write(b"Runner command is empty\n")
+        open(".runner_meta", "w", encoding="utf-8").write("stdout_truncated=0\nstderr_truncated=0\n")
+        return 127
+
+    stdout = bytearray()
+    stderr = bytearray()
+    truncated = {"stdout": False, "stderr": False}
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdin=sys.stdin.buffer,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except Exception as exc:
+        open(".stdout", "wb").write(b"")
+        open(".stderr", "wb").write(f"{type(exc).__name__}: {exc}\n".encode("utf-8", errors="replace"))
+        open(".runner_meta", "w", encoding="utf-8").write("stdout_truncated=0\nstderr_truncated=0\n")
+        return 127
+
+    selector = selectors.DefaultSelector()
+    streams = {process.stdout: ("stdout", stdout, stdout_limit), process.stderr: ("stderr", stderr, stderr_limit)}
+    for stream in streams:
+        selector.register(stream, selectors.EVENT_READ)
+
+    while selector.get_map():
+        for key, _ in selector.select():
+            stream = key.fileobj
+            chunk = os.read(stream.fileno(), 8192)
+            if not chunk:
+                selector.unregister(stream)
+                stream.close()
+                continue
+            name, buffer, limit = streams[stream]
+            remain = max(0, limit - len(buffer))
+            if remain:
+                buffer.extend(chunk[:remain])
+            if len(chunk) > remain:
+                truncated[name] = True
+
+    code = process.wait()
+    open(".stdout", "wb").write(stdout)
+    open(".stderr", "wb").write(stderr)
+    with open(".runner_meta", "w", encoding="utf-8") as meta:
+        meta.write(f"stdout_truncated={int(truncated['stdout'])}\n")
+        meta.write(f"stderr_truncated={int(truncated['stderr'])}\n")
+    return code if isinstance(code, int) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+
 
 
 def normalize_output(value: str) -> str:
@@ -152,13 +227,57 @@ def extract_codeforces_problem_statement(problem_id: str) -> str:
     return f"{header}\n\n{text}"[:80_000]
 
 
+def sanitize_statement_fragment(statement, base_url: str):
+    """Keep Codeforces statement readable while removing risky HTML attributes."""
+    for block in statement.select("script, style, iframe, object, embed, link, meta"):
+        block.decompose()
+
+    allowed_attrs = {"class", "href", "src", "alt", "title", "colspan", "rowspan"}
+    url_attrs = {"href", "src"}
+    for node in statement.find_all(True):
+        for attr in list(node.attrs):
+            attr_lower = attr.lower()
+            if attr_lower.startswith("on") or attr_lower not in allowed_attrs:
+                del node.attrs[attr]
+                continue
+
+            if attr_lower in url_attrs:
+                raw_value = node.get(attr) or ""
+                if isinstance(raw_value, list):
+                    raw_value = " ".join(str(part) for part in raw_value)
+                value = str(raw_value).strip()
+                if not value:
+                    del node.attrs[attr]
+                    continue
+                if value.startswith("#"):
+                    node.attrs[attr] = value
+                    continue
+
+                if attr_lower == "src" and value.lower().startswith("data:image/"):
+                    node.attrs[attr] = value
+                    continue
+
+                resolved = urljoin(base_url, value)
+                parsed = urlparse(resolved)
+                allowed_schemes = {"http", "https", "mailto"} if attr_lower == "href" else {"http", "https"}
+                if parsed.scheme.lower() not in allowed_schemes:
+                    del node.attrs[attr]
+                    continue
+                node.attrs[attr] = resolved
+
+            if attr_lower in {"colspan", "rowspan"}:
+                if not str(node.get(attr, "")).isdigit():
+                    del node.attrs[attr]
+
+    return statement
+
+
 def render_codeforces_problem_statement_html(problem_id: str) -> str:
     soup = fetch_codeforces_problem_page(problem_id)
     statement = soup.select_one(".problem-statement")
     if statement is None:
         raise RuntimeError("Cannot find Codeforces problem statement")
-    for block in statement.select("script, style"):
-        block.decompose()
+    statement = sanitize_statement_fragment(statement, "https://codeforces.com/")
     title_node = statement.select_one(".title")
     title = title_node.get_text(" ", strip=True) if title_node else f"Codeforces {problem_id}"
     html = str(statement)
@@ -298,6 +417,14 @@ def build_ai_prompt(
     problem_statement: str = "",
 ) -> str:
     judge_name = "Codeforces" if (judge or "uva").lower() == "codeforces" else "UVA"
+    response_style = """Response style:
+- Answer in Traditional Chinese.
+- Use clean Markdown headings and bullets. Keep sections short and scannable.
+- Use fenced code blocks for code or exact stdin/stdout only.
+- Use KaTeX-compatible math only when math helps, such as `$O(E \\log V)$` or `$\\lfloor N/k \\rfloor$`.
+- Be specific to the provided constraints, verdict, code, and examples when they are relevant.
+- If information is missing or uncertain, say what is missing instead of guessing.
+- Avoid greetings, filler, and generic encouragement."""
     common_context = f"""Online judge: {judge_name}
 Problem: {problem_id or "not provided"}
 Language: {language}
@@ -337,12 +464,16 @@ error log:
     if mode == "translate":
         return f"""You are translating an online judge problem statement for a Traditional Chinese reader.
 
+{response_style}
+
 Task:
 - Translate the problem statement into clear Traditional Chinese.
 - Preserve section names, mathematical notation, variable names, and limits accurately.
 - Do not solve the problem and do not provide code.
 - If the statement contains input/output format details, make them easy to understand.
 - If the user wrote an extra question, answer only if it is about understanding the statement.
+- Keep the original meaning. Do not add algorithm hints unless the user asks for them.
+- Preferred structure: title, problem story/task, input, output, constraints, examples/notes.
 
 Online judge: {judge_name}
 Problem: {problem_id}
@@ -360,6 +491,8 @@ Problem statement extracted from the judge page:
     if mode == "expected":
         return f"""You are an Online Judge output oracle. Use the online judge problem statement to compute the exact expected stdout for the user's provided stdin.
 
+{response_style}
+
 Task:
 - Answer in Traditional Chinese.
 - Do not create new input. Use the provided stdin exactly as-is.
@@ -367,6 +500,7 @@ Task:
 - Do not provide a full accepted solution or code.
 - If the stdin is invalid for the problem, explain the issue instead of inventing output.
 - If you cannot confidently compute the output, say so clearly instead of guessing.
+- After the required block, briefly explain the calculation only when it helps verify the answer.
 
 Required output format. Put this fenced block first:
 expected stdout:
@@ -395,6 +529,8 @@ Problem statement extracted from the judge page:
     if mode == "tests":
         return f"""You are an Online Judge test-data assistant. Use the online judge problem statement to create local test cases.
 
+{response_style}
+
 Task:
 - Answer in Traditional Chinese.
 - Create one combined local test input and its exact expected stdout.
@@ -402,6 +538,8 @@ Task:
 - Keep the generated test small enough to inspect by hand.
 - Do not provide a full accepted solution or code.
 - If you cannot confidently compute expected output, say so instead of inventing one.
+- Design the test to expose common wrong assumptions, boundary errors, formatting errors, or the user's likely bug if code is provided.
+- After the required blocks, add a short section explaining what the test is checking.
 
 Required output format. Put these two fenced blocks first:
 stdin:
@@ -434,6 +572,8 @@ Current code, for bug-focused tests only:
     if mode == "ask":
         return f"""You are an Online Judge programming tutor. Answer the user's custom prompt in Traditional Chinese.
 
+{response_style}
+
 Rules:
 - Answer the user's custom prompt directly; do not apply the hint/debug/translation templates.
 - The user's question has priority over the current problem context.
@@ -442,10 +582,12 @@ Rules:
 - Use the current problem, code, input, output, and error log only when the user's words clearly need that context.
 - If the user asks for a template, provide a compact reusable code template and a short explanation.
 - Do not start with greetings or self-introduction.
-- Prefer this structure when suitable: short definition, when to use it, template, common pitfalls.
+- Prefer this structure when suitable: short answer first, when to use it, key idea, template, complexity, common pitfalls.
 - Put code templates in fenced code blocks.
 - Do not reveal a full accepted solution unless the user explicitly asks for it; prefer explanation and next steps.
 - Format the answer with short sections or bullets for readability.
+- If the custom prompt conflicts with the current problem context, follow the custom prompt first and mention the context only if useful.
+- If the user asks "is this problem using algorithm X?", answer yes/no first, then explain the likely correct direction.
 
 Optional context. Ignore this section unless it is clearly relevant:
 {common_context}
@@ -453,18 +595,26 @@ Optional context. Ignore this section unless it is clearly relevant:
 
     if mode == "hint":
         instruction = """Help the user understand the problem and find a solution direction.
-- Mention the likely core observation or algorithm.
-- Include useful complexity or data structure hints.
+- Start with a 1 to 2 sentence problem summary.
+- Identify the likely core observation or algorithm and why it fits the constraints.
+- Include useful complexity and data structure hints.
+- Explain input/output or formatting traps if likely.
+- Give a small implementation plan, not full code.
 - Do not provide a full accepted solution.
-- Suggested structure: statement summary, idea, traps, next step."""
+- Suggested structure: 題意摘要, 核心想法, 做法步驟, 複雜度, 常見陷阱, 下一步."""
     else:
         instruction = """Help the user debug the current program.
 - Prioritize verdict, stdout, expected stdout, error log, and code.
-- Point out the most likely 1 to 3 causes.
+- Compare expected stdout and actual stdout when both are present.
+- Point out the most likely 1 to 3 causes, ordered by probability.
+- Reference concrete code behavior instead of vague advice.
 - Suggest targeted tests or variables to inspect.
+- If the code is incomplete, say what part is missing first.
 - Do not rewrite the whole accepted solution."""
 
-    return f"""You are an Online Judge programming tutor. Answer in Traditional Chinese, clearly and concisely.
+    return f"""You are an Online Judge programming tutor.
+
+{response_style}
 
 {instruction}
 
@@ -472,48 +622,115 @@ Optional context. Ignore this section unless it is clearly relevant:
 """
 
 
-def run_container(host_dir: Path, command: list[str], stdin_data: str = "", timeout: int = 5) -> tuple[int, str, str]:
+def _read_text_file(path: Path, limit: int) -> str:
+    try:
+        return path.read_bytes()[:limit].decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+
+
+def _read_runner_meta(path: Path) -> dict[str, bool]:
+    meta = {"stdout_truncated": False, "stderr_truncated": False}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key in meta:
+                meta[key] = value.strip() == "1"
+    except FileNotFoundError:
+        pass
+    return meta
+
+
+def output_limit_message(meta: dict[str, bool]) -> str:
+    parts = []
+    if meta.get("stdout_truncated"):
+        parts.append(f"stdout exceeded {STDOUT_CAPTURE_LIMIT} bytes")
+    if meta.get("stderr_truncated"):
+        parts.append(f"stderr exceeded {STDERR_CAPTURE_LIMIT} bytes")
+    if not parts:
+        return ""
+    return "Output limit exceeded: " + ", ".join(parts) + "."
+
+
+def run_container(
+    container_dir: Path,
+    host_dir: Path,
+    command: list[str],
+    stdin_data: str = "",
+    timeout: int = 5,
+    mem_limit: str = DEFAULT_RUN_MEM_LIMIT,
+    tmpfs_size: str = "16m",
+    env_extra: dict[str, str] | None = None,
+) -> tuple[int, str, str, dict[str, bool]]:
     client = docker.from_env()
     container = None
+    sock = None
+    for filename in (".stdout", ".stderr", ".runner_meta"):
+        (container_dir / filename).unlink(missing_ok=True)
+    wrapped_command = ["python3", "/sandbox/.runner.py", "--", *command]
     try:
         container = client.containers.create(
             JUDGE_IMAGE,
-            command=command,
+            command=wrapped_command,
             working_dir="/sandbox",
             user="1001:1001",
             network_disabled=True,
-            mem_limit="128m",
-            memswap_limit="128m",
+            mem_limit=mem_limit,
+            memswap_limit=mem_limit,
             nano_cpus=500_000_000,
             pids_limit=64,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
             read_only=True,
-            tmpfs={"/tmp": "rw,noexec,nosuid,size=16m"},
+            tmpfs={"/tmp": f"rw,noexec,nosuid,size={tmpfs_size}"},
             volumes={str(host_dir): {"bind": "/sandbox", "mode": "rw"}},
+            environment={
+                "OJ_STDOUT_CAPTURE_LIMIT": str(STDOUT_CAPTURE_LIMIT),
+                "OJ_STDERR_CAPTURE_LIMIT": str(STDERR_CAPTURE_LIMIT),
+                "HOME": "/tmp",
+                "TMPDIR": "/tmp",
+                "GOCACHE": "/tmp/go-build",
+                "GOMODCACHE": "/tmp/go-mod",
+                **(env_extra or {}),
+            },
             stdin_open=True,
         )
         sock = container.attach_socket(params={"stdin": 1, "stream": 1})
         container.start()
-        if stdin_data:
-            sock._sock.sendall(stdin_data.encode("utf-8"))
-        # 即使沒有測資也要送出 EOF，否則讀到 EOF 的程式會卡到 TLE。
-        sock._sock.shutdown(1)
+        try:
+            if stdin_data:
+                sock._sock.sendall(stdin_data.encode("utf-8"))
+            # 即使沒有測資也要送出 EOF，否則讀到 EOF 的程式會卡到 TLE。
+            sock._sock.shutdown(1)
+        except OSError:
+            # Some programs exit before stdin is fully sent. Keep the actual verdict
+            # from container.wait() instead of failing the whole runner.
+            pass
         result = container.wait(timeout=timeout)
-        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-        return int(result["StatusCode"]), stdout, stderr
+        stdout = _read_text_file(container_dir / ".stdout", STDOUT_CAPTURE_LIMIT)
+        stderr = _read_text_file(container_dir / ".stderr", STDERR_CAPTURE_LIMIT)
+        meta = _read_runner_meta(container_dir / ".runner_meta")
+        if not stdout and not stderr and not (container_dir / ".runner_meta").exists():
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")[:STDERR_CAPTURE_LIMIT]
+        return int(result["StatusCode"]), stdout, stderr, meta
     except requests.exceptions.ReadTimeout:
         if container:
             container.kill()
-        return 124, "", "Time limit exceeded"
+        return 124, "", "Time limit exceeded", {"stdout_truncated": False, "stderr_truncated": False}
     except requests.exceptions.ConnectionError as exc:
         if "read timed out" not in str(exc).lower():
             raise
         if container:
             container.kill()
-        return 124, "", "Time limit exceeded"
+        return 124, "", "Time limit exceeded", {"stdout_truncated": False, "stderr_truncated": False}
     finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
         if container:
             container.remove(force=True)
         client.close()
@@ -524,6 +741,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
     language_aliases = {
         "cpp": "cf_cpp17", "cpp17": "cf_cpp17", "cpp20": "cf_cpp20", "c": "cf_c11", "py": "cf_py313", "java": "cf_java21", "js": "cf_node",
         "uva_c": "c", "uva_java": "java", "uva_pascal": "pascal", "uva_cpp11": "cpp11", "uva_py3": "py",
+        "exam_c_mingw": "exam_c_mingw", "exam_cpp_mingw": "exam_cpp_mingw", "exam_java8": "exam_java8", "exam_java11": "exam_java11", "exam_py396": "exam_py396",
         "cf_c11": "c", "cf_cpp17": "cpp17", "cf_cpp20": "cpp20", "cf_cpp23": "cpp23", "cf_java21": "java", "cf_py313": "py", "cf_pypy310": "pypy", "cf_js_v8": "js_v8", "cf_node": "js",
         "cf_rust2021": "rust2021", "cf_rust2024": "rust2024", "cf_go": "go", "cf_perl": "perl", "cf_php": "php", "cf_ruby": "ruby", "cf_ocaml": "ocaml", "cf_d": "d",
     }
@@ -541,7 +759,12 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
         "cpp23": {"filename": "solution.cpp", "compile": ["g++", "-std=c++23", "-O2", "-pipe", "solution.cpp", "-o", "solution"], "run": ["./solution"]},
         "py": {"filename": "solution.py", "run": ["python3", "-I", "-B", "solution.py"]},
         "pypy": {"filename": "solution.py", "run": ["pypy3", "solution.py"]},
-        "java": {"filename": "Main.java", "compile": ["javac", "Main.java"], "run": ["java", "Main"]},
+        "java": {"filename": "Main.java", "compile": ["javac", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m"},
+        "exam_c_mingw": {"filename": "main.c", "compile": ["gcc", "-std=gnu11", "-O2", "-pipe", "main.c", "-lm", "-o", "main"], "run": ["./main"], "label": "C (MinGW GCC 6.3.0 compatible: GNU11)"},
+        "exam_cpp_mingw": {"filename": "main.cpp", "compile": ["g++", "-std=gnu++14", "-O2", "-pipe", "main.cpp", "-o", "main"], "run": ["./main"], "label": "C++ (MinGW GCC 6.3.0 compatible: GNU++14)"},
+        "exam_java8": {"filename": "Main.java", "compile": ["javac", "--release", "8", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "label": "Java (AdoptOpenJDK 8 compatible: javac --release 8)", "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m"},
+        "exam_java11": {"filename": "Main.java", "compile": ["javac", "--release", "11", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "label": "Java (AdoptOpenJDK 11 compatible: javac --release 11)", "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m"},
+        "exam_py396": {"filename": "main.py", "run": ["python3", "-I", "-B", "main.py"], "label": "Python (Python 3.9.6 compatible runner; uses container python3)"},
         "js": {"filename": "solution.js", "run": ["node", "solution.js"]},
         "js_v8": {"filename": "solution.js", "extra_files": {"cf_v8_runner.js": "const fs = require('fs');\nconst lines = fs.readFileSync(0, 'utf8').replace(/\\r\\n/g, '\\n').split('\\n');\nlet index = 0;\nglobal.readline = () => { if (index >= lines.length) throw new Error('EOF'); return lines[index++]; };\nrequire('./solution.js');\n"}, "run": ["node", "cf_v8_runner.js"]},
         "perl": {"filename": "solution.pl", "run": ["perl", "solution.pl"]},
@@ -551,7 +774,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
         "d": {"filename": "solution.d", "compile": ["ldc2", "-O2", "solution.d", "-of=solution"], "run": ["./solution"]},
         "rust2021": {"filename": "solution.rs", "compile": ["rustc", "--edition=2021", "-O", "solution.rs", "-o", "solution"], "run": ["./solution"]},
         "rust2024": {"filename": "solution.rs", "compile": ["rustc", "--edition=2024", "-O", "solution.rs", "-o", "solution"], "run": ["./solution"]},
-        "go": {"filename": "solution.go", "compile": ["go", "build", "-o", "solution", "solution.go"], "run": ["./solution"]},
+        "go": {"filename": "solution.go", "compile": ["go", "build", "-o", "solution", "solution.go"], "run": ["./solution"], "mem_limit": os.getenv("OJ_GO_MEM_LIMIT", "256m"), "tmpfs_size": "96m"},
     }
     spec = language_specs.get(runner_language)
     if not spec:
@@ -565,22 +788,34 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
 
     try:
         filename = spec["filename"]
+        (container_dir / ".runner.py").write_text(RUNNER_WRAPPER, encoding="utf-8")
+        os.chmod(container_dir / ".runner.py", 0o755)
         (container_dir / filename).write_text(code, encoding="utf-8")
         os.chmod(container_dir / filename, 0o644)
         for extra_name, extra_content in spec.get("extra_files", {}).items():
             (container_dir / extra_name).write_text(extra_content, encoding="utf-8")
             os.chmod(container_dir / extra_name, 0o644)
 
+        mem_limit = spec.get("mem_limit", DEFAULT_RUN_MEM_LIMIT)
+        tmpfs_size = spec.get("tmpfs_size", "16m")
         if spec.get("compile"):
-            exit_code, _, compile_error = run_container(host_dir, spec["compile"], timeout=30)
+            exit_code, _, compile_error, compile_meta = run_container(container_dir, host_dir, spec["compile"], timeout=30, mem_limit=mem_limit, tmpfs_size=tmpfs_size)
+            limit_note = output_limit_message(compile_meta)
+            if limit_note:
+                compile_error = (compile_error + "\n" + limit_note).strip()
             if exit_code != 0:
                 return {"submission_id": submission_id, "status": "CE", "stdout": "", "error_log": compile_error[:20_000]}
         command = spec["run"]
 
-        exit_code, stdout, stderr = run_container(host_dir, command, input_data, timeout=5)
+        exit_code, stdout, stderr, run_meta = run_container(container_dir, host_dir, command, input_data, timeout=5, mem_limit=mem_limit, tmpfs_size=tmpfs_size)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         message = ""
-        if exit_code == 124:
+        limit_note = output_limit_message(run_meta)
+        if limit_note:
+            status = "OLE"
+            message = limit_note
+            stderr = (stderr + "\n" + limit_note).strip()
+        elif exit_code == 124:
             status = "TLE"
         elif exit_code != 0:
             status = "RE"
@@ -599,7 +834,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
         else:
             status = "AC"
 
-        payload = {"submission_id": submission_id, "status": status, "cpu_time": f"{elapsed_ms}ms", "stdout": stdout[:100_000], "error_log": stderr[:20_000]}
+        payload = {"submission_id": submission_id, "status": status, "cpu_time": f"{elapsed_ms}ms", "stdout": stdout[:STDOUT_CAPTURE_LIMIT], "error_log": stderr[:STDERR_CAPTURE_LIMIT], "runner": spec.get("label", runner_language)}
         if message:
             payload["message"] = message
         return payload
@@ -838,6 +1073,7 @@ class UvaClient:
         payload = self.hidden_fields(submit_form)
         language = {
             "cpp": "uva_cpp11", "cpp17": "uva_cpp11", "cpp20": "uva_cpp11", "c": "uva_c", "py": "uva_py3", "java": "uva_java",
+            "exam_c_mingw": "uva_c", "exam_cpp_mingw": "uva_cpp11", "exam_java8": "uva_java", "exam_java11": "uva_java", "exam_py396": "uva_py3",
         }.get(language, language)
         uva_language_ids = {
             "uva_c": os.getenv("UVA_C_LANGUAGE_ID", "1"),
@@ -1008,6 +1244,7 @@ class UvaClient:
             driver.get(submit_url)
             language = {
                 "cpp": "uva_cpp11", "cpp17": "uva_cpp11", "cpp20": "uva_cpp11", "c": "uva_c", "py": "uva_py3", "java": "uva_java",
+                "exam_c_mingw": "uva_c", "exam_cpp_mingw": "uva_cpp11", "exam_java8": "uva_java", "exam_java11": "uva_java", "exam_py396": "uva_py3",
             }.get(language, language)
             uva_language_ids = {
                 "uva_c": os.getenv("UVA_C_LANGUAGE_ID", "1"),
@@ -1633,7 +1870,7 @@ def ask_ai_helper_task(
                     "input": [
                         {
                             "role": "system",
-                            "content": "You are a careful programming tutor for online judge problems. Do not reveal a full accepted solution.",
+                            "content": "You are a precise online judge programming tutor. Follow the user's requested mode, answer in Traditional Chinese, use clear Markdown, and do not reveal a full accepted solution unless explicitly requested.",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -1652,7 +1889,7 @@ def ask_ai_helper_task(
                     "systemInstruction": {
                         "parts": [
                             {
-                                "text": "You are a careful programming tutor for online judge problems. Do not reveal a full accepted solution."
+                                "text": "You are a precise online judge programming tutor. Follow the user's requested mode, answer in Traditional Chinese, use clear Markdown, and do not reveal a full accepted solution unless explicitly requested."
                             }
                         ]
                     },

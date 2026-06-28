@@ -25,6 +25,11 @@ services:
       - ./backend/static/index.html:/app/static/index.html
       - ./backend/static/app.js:/app/static/app.js
       - ./backend/static/style.css:/app/static/style.css
+      - ./backend/static/cpe-exam.html:/app/static/cpe-exam.html
+      - ./backend/static/cpe-exam.css:/app/static/cpe-exam.css
+      - ./backend/static/cpe-exam.js:/app/static/cpe-exam.js
+      - ./backend/static/cpe-stars.js:/app/static/cpe-stars.js
+      - ./backend/static/favicon.svg:/app/static/favicon.svg
     depends_on:
       - redis
 
@@ -77,6 +82,10 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
       GEMINI_MAX_OUTPUT_TOKENS: ${GEMINI_MAX_OUTPUT_TOKENS:-900}
+      OJ_STDOUT_CAPTURE_LIMIT: ${OJ_STDOUT_CAPTURE_LIMIT:-120000}
+      OJ_STDERR_CAPTURE_LIMIT: ${OJ_STDERR_CAPTURE_LIMIT:-40000}
+      OJ_JAVA_MEM_LIMIT: ${OJ_JAVA_MEM_LIMIT:-384m}
+      OJ_GO_MEM_LIMIT: ${OJ_GO_MEM_LIMIT:-256m}
     volumes:
       - ./backend/tasks.py:/app/tasks.py
       - /var/run/docker.sock:/var/run/docker.sock

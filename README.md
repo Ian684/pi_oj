@@ -12,6 +12,9 @@ Pi OJ is a lightweight online judge workspace for Raspberry Pi 5. It provides a 
 - ngrok-friendly private access
 - Judge-specific language lists
 - CPE star problem picker grouped by level
+- Independent CPE exam page with strict / standard / practice / custom modes
+- CPE exam history with problem-id and submitted-problem summaries
+- Monaco editor with simple compiler fallback when editor assets fail or timeout
 
 ## Quick Start
 
@@ -32,8 +35,17 @@ http://<raspberry-pi-ip>:8000
 For ngrok, keep the app bound to `127.0.0.1:8000` and run:
 
 ```bash
-ngrok http 8000 --traffic-policy-file ngrok-policy.yaml
+chmod +x start-ngrok.sh
+./start-ngrok.sh
 ```
+
+The script uses this reserved URL by default:
+
+```text
+https://unremovable-unrepeatable-phuong.ngrok-free.dev
+```
+
+If `ngrok-policy.yaml` exists, the script also applies it automatically. If it does not exist, the script prints a warning before starting ngrok without policy protection.
 
 ## Environment
 
@@ -48,6 +60,10 @@ UVA_PASSWORD=
 UVA_LOGIN_MODE=browser
 AI_PROVIDER=gemini
 GEMINI_API_KEY=
+OJ_STDOUT_CAPTURE_LIMIT=120000
+OJ_STDERR_CAPTURE_LIMIT=40000
+OJ_JAVA_MEM_LIMIT=384m
+OJ_GO_MEM_LIMIT=256m
 ```
 
 Codeforces automatic server-side submit is intentionally not relied on because Cloudflare blocks headless worker automation. The UI opens the submit page and copies code for manual submission.
@@ -155,6 +171,130 @@ Problem references are based on YuiHuang's CPE collection:
 
 The original CPE environment page can still be used as the authority when the list changes.
 
+## CPE Exam Mode
+
+The independent CPE exam page is implemented at `/static/cpe-exam.html` and can be opened from the main page.
+
+### Exam Page
+
+- Use a separate exam page instead of adding the exam flow to the practice page.
+- Enter the exam from the main page by opening a separate browser window, not a normal tab.
+- Use a best-effort locked exam window:
+  - Disable the context menu.
+  - Block common refresh shortcuts such as F5 and Ctrl+R.
+  - Block common developer-tool shortcuts such as F12, Ctrl+Shift+I, Ctrl+Shift+J, and Ctrl+U.
+  - Avoid normal practice-page navigation controls inside the exam window.
+- Browser-side blocking is only a deterrent, not a real security boundary; serious enforcement still requires server-side logging and proctoring rules.
+- Use CPE star problems, but submit through the UVA path.
+- Show the exam title, remaining time, problem list, current problem, submit result, and last answer summary.
+- History records show the drawn problem ids and the submitted problem ids so users can quickly review which UVA problems they practiced.
+- Test-source buffers are separated by source. Switching among sample, uDebug, custom, and AI tests loads that source's own input/output instead of carrying over the previous source's text.
+- Refreshing the page must not redraw problems or lose code.
+
+### Exam Rules
+
+- Time limit: 3 hours.
+- Total problems: 7.
+- Problem distribution:
+  - 1 required problem from Must 49.
+  - 2 problems from 1-star.
+  - 2 problems from 2-star.
+  - 1 problem from 3-star.
+  - 1 problem from 4-star.
+- Allow redraw before the exam starts.
+- Freeze the problem list after the exam starts.
+- Show a simple summary after the exam ends.
+
+### Tool Modes
+
+- Strict mode:
+  - Disable AI helper.
+  - Disable AI test data.
+  - Disable uDebug.
+  - Disable Vim.
+  - Use exam compiler.
+- Standard mode:
+  - Disable AI helper.
+  - Allow AI test data.
+  - Allow uDebug.
+  - Disable Vim.
+  - Use exam compiler.
+- Practice mode:
+  - Allow AI helper.
+  - Allow AI test data.
+  - Allow uDebug.
+  - Allow Vim toggle.
+  - Allow OJ compiler, exam compiler, or simple compiler.
+- Custom mode:
+  - Allow per-tool settings for AI helper, AI test data, uDebug, Vim, and compiler type.
+
+### Permission Groups
+
+- AI helper:
+  - Custom prompt.
+  - Hint.
+  - Debug.
+  - Translation.
+- Test tools:
+  - uDebug.
+  - AI test data.
+  - AI expected output for custom input.
+- Editor tools:
+  - Vim.
+- Compiler:
+  - OJ compiler.
+  - Exam compiler.
+  - Simple compiler, which uses the textarea editor but still runs through the same backend judge path.
+
+### Saved State
+
+- Save the problem list in localStorage.
+- Save the start time.
+- Save code independently for every problem.
+- Save the last result for every problem.
+- Save the submit count for every problem.
+- Save the last answer time for every problem.
+- Save the language for every problem.
+- Save the exam mode and permissions.
+
+### Last Answer Summary
+
+- Show problem id.
+- Show language.
+- Show last submit time.
+- Show last result, such as AC / WA / CE / TLE.
+- Show submit count.
+- If only a local test exists, show the local test result.
+- If a UVA submit exists, prefer the UVA result.
+
+### Final Summary And Export
+
+- Show AC count.
+- Show WA / CE / TLE counts.
+- Show each problem's final status.
+- Show each problem's submit count.
+- Show total used time.
+- Allow exporting the exam record.
+
+### Exam Compiler Choices
+
+- C (MinGW GCC 6.3.0)
+- C++ (MinGW GCC 6.3.0)
+- Java (AdoptOpenJDK 8)
+- Java (AdoptOpenJDK 11)
+- Python (Python 3.9.6)
+
+## Local Run Limits
+
+Local judging captures stdout and stderr through an in-container wrapper instead of Docker logs, so runaway output is truncated before it can fill Docker log storage. Defaults:
+
+- `OJ_STDOUT_CAPTURE_LIMIT=120000`
+- `OJ_STDERR_CAPTURE_LIMIT=40000`
+- `OJ_JAVA_MEM_LIMIT=384m`
+- `OJ_GO_MEM_LIMIT=256m`
+
+If stdout or stderr exceeds its capture limit, the local verdict becomes `OLE` and the returned output/error log is truncated. Java compile/run containers use the Java memory limit above and run Java with `-Xmx256m` by default. Go local builds set `GOCACHE` / `GOMODCACHE` under `/tmp` to avoid read-only-home cache failures.
+
 ## AI Helper
 
 Supported AI features:
@@ -173,5 +313,6 @@ The frontend sends only the task context to the backend; API keys stay in the wo
 - Only the worker mounts Docker socket so it can launch judge containers.
 - Do not expose Redis or Celery to public networks.
 - The worker has high host privileges through Docker socket access; keep ngrok/auth policies strict.
+- Use `ngrok-policy.yaml` or another access layer when exposing the app outside your private network.
 - Local runs use per-submission directories under `backend/sandboxes` and remove them after execution.
 

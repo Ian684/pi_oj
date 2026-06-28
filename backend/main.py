@@ -16,6 +16,23 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(title="Pi OJ", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+STATEMENT_SECURITY_HEADERS = {
+    "Cache-Control": "public, max-age=3600",
+    "Content-Security-Policy": (
+        "default-src 'none'; "
+        "style-src 'unsafe-inline'; "
+        "img-src https: data:; "
+        "font-src data:; "
+        "object-src 'none'; "
+        "script-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'; "
+        "frame-ancestors 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
 
 def normalize_uva_problem_id(value: str) -> str:
     try:
@@ -133,6 +150,7 @@ SUPPORTED_LANGUAGES = {
     "cf_c11", "cf_cpp17", "cf_cpp20", "cf_cpp23", "cf_java21", "cf_py313", "cf_pypy310",
     "cf_js_v8", "cf_node", "cf_rust2021", "cf_rust2024", "cf_go",
     "cf_perl", "cf_php", "cf_ruby", "cf_ocaml", "cf_d",
+    "exam_c_mingw", "exam_cpp_mingw", "exam_java8", "exam_java11", "exam_py396",
     "c", "cpp", "cpp17", "cpp20", "py", "java", "js",
 }
 
@@ -145,6 +163,11 @@ def validate_language(language: str) -> None:
 def index() -> RedirectResponse:
     # 保留相對資源路徑，讓直接開啟 index.html 與伺服器模式都能正確載入樣式。
     return RedirectResponse(url="/static/index.html")
+
+
+@app.get("/favicon.ico")
+def favicon() -> RedirectResponse:
+    return RedirectResponse(url="/static/favicon.svg")
 
 
 @app.get("/api/health")
@@ -195,7 +218,7 @@ def problem_statement(judge: str, problem_id: str) -> HTMLResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"題目頁載入失敗：{exc}") from exc
-    return HTMLResponse(content=html, headers={"Cache-Control": "public, max-age=3600"})
+    return HTMLResponse(content=html, headers=STATEMENT_SECURITY_HEADERS)
 
 
 @app.post("/api/run", status_code=202)

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi OJ - CPE 考試</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/static/vendor/monaco/vs/loader.js?v=0.55.1" as="script">
+  <link rel="stylesheet" href="/static/cpe-exam.css?v=16">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <strong>CPE 考試</strong>
+      <span id="examStatus">尚未開始</span>
+    </div>
+    <nav class="exam-menu" aria-label="考試選單">
+      <button class="menu-button" type="button" data-popover="setup">考試設定</button>
+      <button class="menu-button" type="button" data-popover="problems">題目列表</button>
+      <button class="menu-button" type="button" data-popover="summary">考試總結</button>
+      <button class="menu-button" type="button" data-popover="last">上次作答</button>
+      <button class="menu-button" type="button" data-popover="history">歷史紀錄</button>
+    </nav>
+    <div class="header-actions">
+      <span id="timer" class="timer">03:00:00</span>
+      <button id="importRecord" type="button">匯入紀錄</button>
+      <button id="exportRecord" type="button">匯出紀錄</button>
+      <input id="importFile" type="file" accept="application/json,.json" hidden>
+    </div>
+  </header>
+
+  <div id="popoverLayer" class="popover-layer" hidden>
+    <section id="popoverSetup" class="popover-panel setup-popover" hidden>
+      <div class="panel-title">考試設定</div>
+      <div class="setup-grid">
+        <label>模式
+          <select id="examMode">
+            <option value="strict">嚴格模式</option>
+            <option value="standard" selected>標準模式</option>
+            <option value="practice">練習模式</option>
+            <option value="custom">自訂模式</option>
+          </select>
+        </label>
+        <label>編譯器
+          <select id="compilerMode">
+            <option value="exam">考試編譯器</option>
+            <option value="oj">OJ 編譯器</option>
+            <option value="simple">簡易編譯器</option>
+          </select>
+        </label>
+        <label>語言
+          <select id="language"></select>
+        </label>
+        <div id="customPermissions" class="custom-permissions" hidden>
+          <label><input id="allowAiHelper" type="checkbox"> AI 助手</label>
+          <label><input id="allowAiTests" type="checkbox"> AI 測資</label>
+          <label><input id="allowUdebug" type="checkbox"> uDebug</label>
+          <label><input id="allowVim" type="checkbox"> Vim</label>
+        </div>
+        <div class="setup-actions">
+          <button id="drawProblems" type="button">重新抽題</button>
+          <button id="startExam" class="primary" type="button">開始考試</button>
+          <button id="pauseExam" type="button">暫停</button>
+          <button id="finishExam" class="danger" type="button">結束考試</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="popoverProblems" class="popover-panel problems-popover" hidden>
+      <div class="panel-title">題目列表</div>
+      <div id="problemList" class="problem-list"></div>
+    </section>
+
+    <section id="popoverSummary" class="popover-panel summary-popover" hidden>
+      <div class="panel-title">考試總結</div>
+      <pre id="summary">開始後會顯示統計。</pre>
+    </section>
+
+    <section id="popoverLast" class="popover-panel last-popover" hidden>
+      <div class="panel-title">上次作答</div>
+      <pre id="lastAnswer">尚無紀錄。</pre>
+    </section>
+
+    <section id="popoverHistory" class="popover-panel history-popover" hidden>
+      <div class="panel-title">歷史紀錄</div>
+      <div id="historyList" class="history-list"></div>
+    </section>
+  </div>
+
+  <main>
+    <section class="exam-workspace">
+      <div class="problem-bar">
+        <div class="problem-title-wrap">
+          <span id="problemLevel" class="level-pill">-</span>
+          <strong id="problemTitle">尚未選題</strong>
+        </div>
+        <div class="problem-actions">
+          <button id="vimToggle" type="button" class="vim-toggle" aria-pressed="false" disabled>Vim OFF</button>
+          <button id="openProblem" type="button">題目 PDF</button>
+          <button id="runCode" class="primary" type="button">執行測試</button>
+          <button id="submitUva" type="button">↑ 提交 UVA</button>
+        </div>
+      </div>
+      <div id="editor" class="code-editor-shell"></div>
+      <textarea id="code" class="code-editor-fallback" spellcheck="false"></textarea>
+      <div id="vimStatus" class="vim-status" hidden></div>
+    </section>
+
+    <aside class="exam-tools">
+      <div class="side-tabs" role="tablist" aria-label="工具面板">
+        <button id="testTab" class="side-tab active" type="button" role="tab" aria-selected="true" aria-controls="testPanel">測試</button>
+        <button id="aiTab" class="side-tab" type="button" role="tab" aria-selected="false" aria-controls="aiPanel">AI 助手</button>
+      </div>
+
+      <section id="testPanel" class="side-panel active" role="tabpanel" aria-labelledby="testTab">
+        <div class="source-bar">
+          <label>測資來源
+            <select id="testSource">
+              <option value="sample">題目範例</option>
+              <option value="udebug">uDebug</option>
+              <option value="ai">AI 測資</option>
+              <option value="custom">自訂</option>
+            </select>
+          </label>
+          <button id="loadTests" type="button">載入</button>
+          <button id="openUdebug" type="button">uDebug</button>
+          <button id="aiExpected" type="button">AI 算輸出</button>
+        </div>
+
+        <section class="panel io-panel">
+          <div class="panel-title">測試輸入</div>
+          <textarea id="input" class="test-box" placeholder="stdin"></textarea>
+        </section>
+
+        <section class="panel io-panel">
+          <div class="panel-title">預期輸出（空白時只執行）</div>
+          <textarea id="expected" class="test-box" placeholder="expected stdout"></textarea>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="result-title">
+            <span>執行結果</span>
+            <span id="verdict" class="pill neutral">尚未執行</span>
+          </div>
+          <pre id="output">執行程式後結果會顯示在這裡。</pre>
+        </section>
+      </section>
+
+      <section id="aiPanel" class="side-panel ai-panel" role="tabpanel" aria-labelledby="aiTab" hidden>
+        <div class="panel-title">
+          <span>AI 助手</span>
+          <span class="ai-buttons">
+            <button id="aiAsk" type="button">送出</button>
+            <button id="aiHint" type="button">提示</button>
+            <button id="aiDebug" type="button">除錯</button>
+            <button id="aiTranslate" type="button">翻譯</button>
+          </span>
+        </div>
+        <textarea id="aiQuestion" class="ai-question" placeholder="問 AI，例如：這題可以用 BFS 嗎？"></textarea>
+        <div id="aiOutput" class="ai-output ai-readable">AI 回答會顯示在這裡。</div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="statementPane" class="statement-pane" hidden>
+    <div class="statement-toolbar">
+      <strong id="statementTitle">題目 PDF</strong>
+      <button id="closeStatement" type="button">關閉</button>
+    </div>
+    <iframe id="statementFrame" title="題目 PDF"></iframe>
+  </div>
+
+  <div id="toast" role="status"></div>
+  <script src="/static/cpe-stars.js?v=5"></script>
+  <script src="/static/vendor/marked.umd.js?v=15.0.12"></script>
+  <script src="/static/cpe-exam.js?v=28"></script>
+</body>
+</html>
+

@@ -7,8 +7,7 @@ let currentPdfObjectUrl = null;
 let lastSubmittedExpectedOutput = "";
 let lastRunResult = null;
 let monacoLoaderSource = "local";
-
-const RUN_RESULT_STORAGE_KEY = "pi-oj-last-run-result";
+const loadedMonacoContributions = new Set();
 
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
@@ -19,7 +18,73 @@ function applyTheme(theme) {
   $("themeIcon").textContent = dark ? "☼" : "☾";
   $("themeLabel").textContent = dark ? "淺色" : "深色";
   $("themeToggle").setAttribute("aria-label", dark ? "切換淺色模式" : "切換深色模式");
-  if (codeEditor && window.monaco) monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+  applyEditorAppearance();
+}
+
+function currentEditorTheme() {
+  if ($("compilerMode")?.value === "exam" && $("judge")?.value !== "codeforces") return "scintilla-cpe";
+  return root.dataset.theme === "dark" ? "vs-dark" : "vs";
+}
+
+function currentEditorOptions() {
+  if ($("compilerMode")?.value === "exam" && $("judge")?.value !== "codeforces") {
+    return {
+      fontFamily: "'Courier New', 'Lucida Console', 'MingLiU', monospace",
+      fontSize: 16,
+      fontWeight: "bold",
+      fontLigatures: false,
+      cursorBlinking: "blink",
+      smoothScrolling: false,
+      renderLineHighlight: "line",
+      scrollbar: {verticalScrollbarSize: 16, horizontalScrollbarSize: 16},
+    };
+  }
+  return {
+    fontFamily: '"Cascadia Code", "SFMono-Regular", Consolas, monospace',
+    fontSize: 14,
+    fontWeight: "normal",
+    fontLigatures: true,
+    cursorBlinking: "smooth",
+    smoothScrolling: true,
+    renderLineHighlight: "line",
+    scrollbar: {verticalScrollbarSize: 10, horizontalScrollbarSize: 10},
+  };
+}
+
+function applyEditorAppearance() {
+  if (!codeEditor || !window.monaco?.editor) return;
+  monaco.editor.setTheme(currentEditorTheme());
+  codeEditor.updateOptions(currentEditorOptions());
+}
+
+function defineScintillaTheme() {
+  if (!window.monaco?.editor) return;
+  monaco.editor.defineTheme("scintilla-cpe", {
+    base: "vs",
+    inherit: true,
+    rules: [
+      {token: "keyword", foreground: "0000FF", fontStyle: "bold"},
+      {token: "type", foreground: "0000FF", fontStyle: "bold"},
+      {token: "comment", foreground: "008000", fontStyle: "italic"},
+      {token: "string", foreground: "FF00FF"},
+      {token: "number", foreground: "FF0000"},
+      {token: "predefined", foreground: "0000FF"},
+    ],
+    colors: {
+      "editor.background": "#FFFFFF",
+      "editor.foreground": "#000000",
+      "editorGutter.background": "#FFFFFF",
+      "editorLineNumber.foreground": "#808080",
+      "editorLineNumber.activeForeground": "#000000",
+      "editorCursor.foreground": "#000000",
+      "editor.selectionBackground": "#b5d5ff",
+      "editor.inactiveSelectionBackground": "#d9e9ff",
+      "editor.lineHighlightBackground": "#F0F0F0",
+      "editor.lineHighlightBorder": "#F0F0F0",
+      "editorIndentGuide.background1": "#e6e6e6",
+      "editorIndentGuide.activeBackground1": "#bdbdbd",
+    },
+  });
 }
 
 const storedTheme = localStorage.getItem("pi-oj-theme");
@@ -58,9 +123,51 @@ int main() {
     return 0;
 }
 `,
-  uva_py3: `# Write code here
+  uva_py3: `def main():
+    # Write code here
+    pass
 
-def main():
+if __name__ == "__main__":
+    main()
+`,
+  exam_c_mingw: `#include <stdio.h>
+
+int main(void) {
+    /* Write code here */
+    return 0;
+}
+`,
+  exam_cpp_mingw: `#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    // Write code here
+    return 0;
+}
+`,
+  exam_java8: `import java.io.*;
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        // Write code here
+    }
+}
+`,
+  exam_java11: `import java.io.*;
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        // Write code here
+    }
+}
+`,
+  exam_py396: `def main():
+    # Write code here
     pass
 
 if __name__ == "__main__":
@@ -115,17 +222,15 @@ public class Main {
     }
 }
 `,
-  cf_py313: `# Write code here
-
-def main():
+  cf_py313: `def main():
+    # Write code here
     pass
 
 if __name__ == "__main__":
     main()
 `,
-  cf_pypy310: `# Write code here
-
-def main():
+  cf_pypy310: `def main():
+    # Write code here
     pass
 
 if __name__ == "__main__":
@@ -186,23 +291,109 @@ void main() {
 `,
 };
 
+function openCpeExamWindow() {
+  const features = [
+    "popup=yes",
+    "width=1440",
+    "height=900",
+    "left=80",
+    "top=40",
+    "menubar=no",
+    "toolbar=no",
+    "location=no",
+    "status=no",
+    "resizable=yes",
+    "scrollbars=no",
+  ].join(",");
+  const examWindow = window.open("/static/cpe-exam.html", "PiOJ_CPE_Exam", features);
+  if (!examWindow) {
+    toast("瀏覽器封鎖了考試視窗，請允許此網站開啟彈出視窗");
+  } else {
+    examWindow.focus();
+  }
+}
+
+for (const key of Object.keys(templates)) {
+  templates[key] = templates[key].replace(/\n+$/, "");
+}
+
+const legacyTemplateVariants = {
+  uva_py3: [`def main():
+
+    # Write code here
+    pass
+
+if __name__ == "__main__":
+    main()`],
+  cf_py313: [`def main():
+
+    # Write code here
+    pass
+
+if __name__ == "__main__":
+    main()`],
+  cf_pypy310: [`# Write code here
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()`],
+};
+
+function isSavedDefaultTemplate(language, code) {
+  if (typeof code !== "string") return false;
+  const normalized = code.replace(/\n+$/, "");
+  return normalized === templates[language] || (legacyTemplateVariants[language] || []).includes(normalized);
+}
+
+function codeForLanguage(language) {
+  if (isSavedDefaultTemplate(language, saved[language])) {
+    saved[language] = templates[language] || "";
+    localStorage.setItem("pi-oj-code", JSON.stringify(saved));
+  }
+  return saved[language] || templates[language] || "";
+}
+
 const languageOptionsByJudge = {
   uva: [["uva_c", "ANSI C 5.3.0"], ["uva_java", "JAVA 1.8.0"], ["uva_pascal", "PASCAL 3.0.0"], ["uva_cpp11", "C++11 5.3.0"], ["uva_py3", "PYTH3 3.5.1"]],
   codeforces: [["cf_c11", "GNU GCC C11 5.1.0"], ["cf_cpp17", "GNU G++17 7.3.0"], ["cf_cpp20", "GNU G++20 13.2"], ["cf_cpp23", "GNU G++23 14.2"], ["cf_java21", "Java 21 64bit"], ["cf_py313", "Python 3.13.2"], ["cf_pypy310", "PyPy 3.10"], ["cf_js_v8", "JavaScript V8"], ["cf_node", "Node.js 15.8.0"], ["cf_rust2021", "Rust 1.89.0 (2021)"], ["cf_rust2024", "Rust 1.89.0 (2024)"], ["cf_go", "Go 1.22.2"], ["cf_perl", "Perl 5.20.1"], ["cf_php", "PHP 8.1.7"], ["cf_ruby", "Ruby 3.2.2"], ["cf_ocaml", "OCaml 4.02.1"], ["cf_d", "D DMD32 2.105.0"]],
 };
-const monacoLanguageModes = {uva_c:"c", uva_java:"java", uva_pascal:"pascal", uva_cpp11:"cpp", uva_py3:"python", cf_c11:"c", cf_cpp17:"cpp", cf_cpp20:"cpp", cf_cpp23:"cpp", cf_java21:"java", cf_py313:"python", cf_pypy310:"python", cf_js_v8:"javascript", cf_node:"javascript", cf_rust2021:"rust", cf_rust2024:"rust", cf_go:"go", cf_perl:"perl", cf_php:"php", cf_ruby:"ruby", cf_ocaml:"ocaml", cf_d:"d"};
+const examLanguageOptions = [["exam_c_mingw", "C (MinGW GCC 6.3.0)"], ["exam_cpp_mingw", "C++ (MinGW GCC 6.3.0)"], ["exam_java8", "Java (AdoptOpenJDK 8)"], ["exam_java11", "Java (AdoptOpenJDK 11)"], ["exam_py396", "Python (Python 3.9.6)"]];
+const cpeLevelShortLabels = {must:"必考", star1:"★", star2:"★★", star3:"★★★", star4:"★★★★", star5:"★★★★★"};
+const monacoLanguageModes = {uva_c:"c", uva_java:"java", uva_pascal:"pascal", uva_cpp11:"cpp", uva_py3:"python", cf_c11:"c", cf_cpp17:"cpp", cf_cpp20:"cpp", cf_cpp23:"cpp", cf_java21:"java", cf_py313:"python", cf_pypy310:"python", cf_js_v8:"javascript", cf_node:"javascript", cf_rust2021:"rust", cf_rust2024:"rust", cf_go:"go", cf_perl:"perl", cf_php:"php", cf_ruby:"ruby", cf_ocaml:"ocaml", cf_d:"d", exam_c_mingw:"c", exam_cpp_mingw:"cpp", exam_java8:"java", exam_java11:"java", exam_py396:"python"};
+const monacoLanguageContributions = {
+  c: "vs/basic-languages/cpp/cpp.contribution",
+  cpp: "vs/basic-languages/cpp/cpp.contribution",
+  java: "vs/basic-languages/java/java.contribution",
+  pascal: "vs/basic-languages/pascal/pascal.contribution",
+  python: "vs/basic-languages/python/python.contribution",
+  javascript: "vs/basic-languages/javascript/javascript.contribution",
+  rust: "vs/basic-languages/rust/rust.contribution",
+  go: "vs/basic-languages/go/go.contribution",
+  perl: "vs/basic-languages/perl/perl.contribution",
+  php: "vs/basic-languages/php/php.contribution",
+  ruby: "vs/basic-languages/ruby/ruby.contribution",
+};
 const languageAliases = {cpp:"uva_cpp11", cpp17:"cf_cpp17", cpp20:"cf_cpp20", c:"cf_c11", py:"cf_py313", java:"cf_java21", js:"cf_node"};
-function defaultLanguageForJudge(judge = getJudge()) { return judge === "codeforces" ? "cf_cpp17" : "uva_cpp11"; }
-function languageStorageKey(judge = getJudge()) { return `pi-oj-language-${judge}`; }
+function getCompilerMode(judge = getJudge()) { return judge === "codeforces" ? "oj" : ($("compilerMode")?.value || "oj"); }
+function languageOptionsFor(judge = getJudge(), compilerMode = getCompilerMode(judge)) {
+  if (judge !== "codeforces" && ["exam", "simple"].includes(compilerMode)) return examLanguageOptions;
+  return languageOptionsByJudge[judge] || languageOptionsByJudge.uva;
+}
+function defaultLanguageForJudge(judge = getJudge(), compilerMode = getCompilerMode(judge)) { return judge === "codeforces" ? "cf_cpp17" : (["exam", "simple"].includes(compilerMode) ? "exam_cpp_mingw" : "uva_cpp11"); }
+function languageStorageKey(judge = getJudge(), compilerMode = getCompilerMode(judge)) { return `pi-oj-language-${judge}-${compilerMode}`; }
 function normalizeLanguage(value, judge = getJudge()) {
-  const options = languageOptionsByJudge[judge] || languageOptionsByJudge.uva;
-  const normalized = languageAliases[value] || value || defaultLanguageForJudge(judge);
-  return options.some(([id]) => id === normalized) ? normalized : defaultLanguageForJudge(judge);
+  const compilerMode = getCompilerMode(judge);
+  const options = languageOptionsFor(judge, compilerMode);
+  const normalized = languageAliases[value] || value || defaultLanguageForJudge(judge, compilerMode);
+  return options.some(([id]) => id === normalized) ? normalized : defaultLanguageForJudge(judge, compilerMode);
 }
 function renderLanguageOptions(judge = getJudge()) {
   const select = $("language");
-  const options = languageOptionsByJudge[judge] || languageOptionsByJudge.uva;
-  const nextValue = normalizeLanguage(localStorage.getItem(languageStorageKey(judge)) || select.value, judge);
+  const compilerMode = getCompilerMode(judge);
+  const options = languageOptionsFor(judge, compilerMode);
+  const nextValue = normalizeLanguage(localStorage.getItem(languageStorageKey(judge, compilerMode)) || select.value, judge);
   select.replaceChildren(...options.map(([value, label]) => {
     const option = document.createElement("option");
     option.value = value;
@@ -211,16 +402,33 @@ function renderLanguageOptions(judge = getJudge()) {
   }));
   select.value = nextValue;
   activeLanguage = nextValue;
-  localStorage.setItem(languageStorageKey(judge), nextValue);
+  localStorage.setItem(languageStorageKey(judge, compilerMode), nextValue);
 }
 function currentLanguageMode() { return monacoLanguageModes[$("language").value] || "plaintext"; }
 
+function loadMonacoContribution(mode) {
+  const modulePath = monacoLanguageContributions[mode];
+  if (!modulePath || loadedMonacoContributions.has(modulePath) || typeof window.require !== "function") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    window.require([modulePath], () => {
+      loadedMonacoContributions.add(modulePath);
+      resolve();
+    }, (error) => {
+      console.warn("Monaco language contribution failed", modulePath, error);
+      resolve();
+    });
+  });
+}
+
 const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
 const savedAiState = JSON.parse(localStorage.getItem("pi-oj-ai") || "{}");
-let activeLanguage = defaultLanguageForJudge(effectiveJudge(localStorage.getItem("pi-oj-judge") || "uva"));
 $("judge").value = localStorage.getItem("pi-oj-judge") || "uva";
-renderLanguageOptions(effectiveJudge());
-$("code").value = saved[activeLanguage] || templates[activeLanguage] || "";
+$("compilerMode").value = getJudge() === "codeforces" ? "oj" : (localStorage.getItem(`pi-oj-compiler-mode-${getJudge()}`) || "oj");
+let activeLanguage = defaultLanguageForJudge(getJudge(), getCompilerMode());
+renderLanguageOptions(getJudge());
+$("code").value = codeForLanguage(activeLanguage);
 $("aiQuestion").value = savedAiState.question || "";
 $("problemId").value = getJudge() === "cpe"
   ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
@@ -228,6 +436,18 @@ $("problemId").value = getJudge() === "cpe"
 updateJudgeUi();
 const savedTests = JSON.parse(localStorage.getItem("pi-oj-tests") || "{}");
 let activeTestSource = "sample";
+
+function ensureCpeStarGroups() {
+  if (window.CPE_STAR_GROUPS?.problems) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "/static/cpe-stars.js?v=5";
+    script.async = true;
+    script.onload = () => resolve(Boolean(window.CPE_STAR_GROUPS?.problems));
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
+}
 
 function renderCpeStarOptions() {
   const select = $("cpeStar");
@@ -239,12 +459,13 @@ function renderCpeStarOptions() {
   select.replaceChildren();
   const empty = document.createElement("option");
   empty.value = "";
-  empty.textContent = problems.length ? "Select problem..." : "No list loaded";
+  empty.textContent = problems.length ? "選擇題目..." : "尚未載入清單...";
   select.appendChild(empty);
   for (const problem of problems) {
     const option = document.createElement("option");
     option.value = String(problem.id || "");
     option.textContent = [problem.id, problem.title].filter(Boolean).join(" - ");
+    option.title = option.textContent;
     select.appendChild(option);
   }
   const savedCpeProblem = localStorage.getItem("pi-oj-problem-id-cpe") || "";
@@ -255,8 +476,9 @@ function renderCpeStarOptions() {
   if (levelSelect) {
     for (const option of levelSelect.options) {
       const count = groups.problems?.[option.value]?.length || 0;
-      const label = groups.labels?.[option.value] || option.textContent.replace(/\s*\(\d+\)$/, "");
+      const label = cpeLevelShortLabels[option.value] || groups.labels?.[option.value] || option.textContent.replace(/\s*\(\d+\)$/, "");
       option.textContent = count ? `${label} (${count})` : label;
+      option.title = option.textContent;
     }
   }
 }
@@ -317,15 +539,17 @@ function updateJudgeUi() {
   const isCodeforces = judge === "codeforces";
   if ($("cpeLabel")) $("cpeLabel").hidden = !isCpe;
   if (label) label.hidden = isCpe;
+  if ($("compilerModeLabel")) $("compilerModeLabel").hidden = isCodeforces;
+  if (isCodeforces) $("compilerMode").value = "oj";
   if (isCodeforces) {
     if (label) label.childNodes[0].textContent = "Codeforces " + "\u984c\u865f" + " ";
     $("problemId").placeholder = "1843A";
-    $("pdfToggle").textContent = "\u984c\u76ee\u9801";
+    if ($("pdfToggle")) $("pdfToggle").textContent = "\u984c\u76ee\u9801";
     $("uva").textContent = "\u2191 " + "\u63d0\u4ea4" + " Codeforces";
   } else {
     if (label) label.childNodes[0].textContent = "UVA " + "\u984c\u865f" + " ";
     $("problemId").placeholder = "100-1800 / 10000-13400";
-    $("pdfToggle").textContent = "\u984c\u76ee PDF";
+    if ($("pdfToggle")) $("pdfToggle").textContent = "\u984c\u76ee PDF";
     $("uva").textContent = "\u2191 " + "\u63d0\u4ea4" + " UVA";
   }
   syncTestSourceOptions();
@@ -342,13 +566,50 @@ const testSourceLabels = {
   ai: ["AI \u6e2c\u8cc7\u8f38\u5165", "AI \u6e2c\u8cc7\u9810\u671f\u8f38\u51fa"],
 };
 
+function isSimpleCompilerActive() {
+  return getCompilerMode() === "simple" || document.body.classList.contains("monaco-failed");
+}
+
 function getCode() {
-  return codeEditor ? codeEditor.getValue() : $("code").value;
+  return isSimpleCompilerActive() ? $("code").value : (codeEditor ? codeEditor.getValue() : $("code").value);
 }
 
 function setCode(value) {
+  $("code").value = value;
   if (codeEditor) codeEditor.setValue(value);
-  else $("code").value = value;
+}
+
+function activateSimpleCompiler(message = "已切換成簡易編譯器。你仍然可以正常寫程式與執行測試。", persist = true) {
+  const currentCode = codeEditor ? codeEditor.getValue() : $("code").value;
+  $("code").value = currentCode;
+
+  if (vimMode) setVimMode(false, false);
+  $("vimToggle").disabled = true;
+
+  document.body.classList.remove("monaco-ready");
+  document.body.classList.add("monaco-failed");
+
+  if ($("compilerMode") && getJudge() !== "codeforces") {
+    $("compilerMode").value = "simple";
+    if (persist) localStorage.setItem(`pi-oj-compiler-mode-${getJudge()}`, "simple");
+  }
+
+  if (message) toast(message);
+}
+
+async function activateMonacoCompiler() {
+  document.body.classList.remove("monaco-failed");
+  if (!codeEditor) {
+    await initializeMonaco();
+    return;
+  }
+  setCode($("code").value);
+  await loadMonacoContribution(currentLanguageMode());
+  monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
+  applyEditorAppearance();
+  codeEditor.layout();
+  document.body.classList.add("monaco-ready");
+  $("vimToggle").disabled = !monacoVimApi?.initVimMode;
 }
 
 function saveActiveTest() {
@@ -471,7 +732,7 @@ async function openProblemPdf() {
     return;
   }
 
-  const button = $("pdfToggle");
+  const button = $("pdfToggle") || $("pdfTab");
   const judge = effectiveJudge();
   const statementId = problemId.trim().toUpperCase().replace(/[^0-9A-Z]/g, "");
   const pdfUrl = judge === "codeforces" ? `/api/problems/codeforces/${statementId}/statement` : problemUrlForJudge(judge, problemId);
@@ -479,6 +740,7 @@ async function openProblemPdf() {
   $("pdfTitle").textContent = `${judge === "codeforces" ? "Codeforces" : "UVA"} ${problemId} \u984c\u76ee`;
   $("openPdf").href = problemUrlForJudge(judge, problemId) || pdfUrl;
   $("pdfPane").hidden = false;
+  switchSidePanel("pdf", false);
   document.querySelector("main").classList.add("pdf-open");
   try {
     if (judge === "codeforces") {
@@ -512,12 +774,21 @@ async function openProblemPdf() {
 
 function closeProblemPdf() {
   $("pdfPane").hidden = true;
+  $("pdfPane").classList.remove("expanded");
+  $("expandPdf").textContent = "放大閱讀";
   document.querySelector("main").classList.remove("pdf-open");
   $("problemPdf").removeAttribute("src");
   if (currentPdfObjectUrl) {
     URL.revokeObjectURL(currentPdfObjectUrl);
     currentPdfObjectUrl = null;
   }
+  if ($("pdfTab").classList.contains("active")) switchSidePanel("test", false);
+}
+
+function togglePdfExpand() {
+  const expanded = !$("pdfPane").classList.contains("expanded");
+  $("pdfPane").classList.toggle("expanded", expanded);
+  $("expandPdf").textContent = expanded ? "回到右側" : "放大閱讀";
 }
 
 function toast(message) {
@@ -547,7 +818,7 @@ async function resourceExists(url) {
 }
 
 async function ensureMonacoLoader() {
-  if (typeof window.require === "function") return "existing";
+  if (typeof window.require === "function" && typeof window.require.config === "function") return "existing";
   const candidates = [
     {src: `/static/vendor/monaco/vs/loader.js?v=${MONACO_VERSION}`, source: "local"},
     {src: `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs/loader.js`, source: "cdn"},
@@ -568,9 +839,14 @@ async function ensureMonacoLoader() {
 }
 
 async function initializeMonaco() {
-  const useFallback = (message = "Monaco 載入失敗，已切換成簡易編輯器") => {
-    document.body.classList.add("monaco-failed");
-    toast(message);
+  if (getCompilerMode() === "simple") {
+    activateSimpleCompiler(null, false);
+    return;
+  }
+
+  const useFallback = (message = "Monaco 載入失敗，已切換成簡易編譯器。你仍然可以正常寫程式與執行測試。") => {
+    if (document.body.classList.contains("monaco-ready") && !document.body.classList.contains("monaco-failed")) return;
+    activateSimpleCompiler(message);
   };
 
   try {
@@ -595,14 +871,25 @@ async function initializeMonaco() {
     "monaco-vim": vimPath,
   }});
 
-  window.require([
-    "vs/editor/editor.main",
-    "vs/basic-languages/monaco.contribution",
-  ], () => {
+  let settled = false;
+  const fallbackTimer = setTimeout(() => {
+    if (!settled) {
+      settled = true;
+      useFallback("Monaco 載入超過 12 秒，已切換成簡易編譯器。你仍然可以正常寫程式與執行測試。");
+    }
+  }, 12000);
+
+  window.require(["vs/editor/editor.main"], async () => {
+    settled = true;
+    clearTimeout(fallbackTimer);
+    if (document.body.classList.contains("monaco-failed")) return;
+    defineScintillaTheme();
+    await loadMonacoContribution(currentLanguageMode());
+    const createdAt = performance.now();
     codeEditor = monaco.editor.create($("editor"), {
       value: $("code").value,
       language: currentLanguageMode(),
-      theme: root.dataset.theme === "dark" ? "vs-dark" : "vs",
+      theme: currentEditorTheme(),
       automaticLayout: true,
       fontFamily: '"Cascadia Code", "SFMono-Regular", Consolas, monospace',
       fontSize: 14,
@@ -621,7 +908,16 @@ async function initializeMonaco() {
       tabSize: 4,
       insertSpaces: true,
     });
-    document.body.classList.add("monaco-ready");
+    applyEditorAppearance();
+    const revealEditor = () => {
+      codeEditor.layout();
+      requestAnimationFrame(() => {
+        codeEditor.layout();
+        document.body.classList.add("monaco-ready");
+      });
+    };
+    const elapsed = performance.now() - createdAt;
+    setTimeout(() => requestAnimationFrame(revealEditor), Math.max(0, 350 - elapsed));
     codeEditor.onDidChangeModelContent(() => {
       saved[$("language").value] = codeEditor.getValue();
       localStorage.setItem("pi-oj-code", JSON.stringify(saved));
@@ -636,15 +932,19 @@ async function initializeMonaco() {
     }
 
     window.require(["monaco-vim"], (MonacoVim) => {
-      monacoVimApi = MonacoVim;
-      $("vimToggle").disabled = false;
-      if (localStorage.getItem("pi-oj-vim") === "true") setVimMode(true, false);
+      monacoVimApi = MonacoVim?.initVimMode
+        ? MonacoVim
+        : (MonacoVim?.default?.initVimMode ? MonacoVim.default : globalThis.MonacoVim);
+      $("vimToggle").disabled = !monacoVimApi?.initVimMode;
+      if (monacoVimApi?.initVimMode && localStorage.getItem("pi-oj-vim") === "true") setVimMode(true, false);
     }, (error) => {
       console.error("monaco-vim initialization failed", error);
       $("vimToggle").disabled = true;
       toast("Vim 模式載入失敗，編輯器仍可正常使用");
     });
   }, (error) => {
+    settled = true;
+    clearTimeout(fallbackTimer);
     console.error("Monaco initialization failed", error);
     useFallback();
   });
@@ -727,35 +1027,6 @@ function setVerdict(status, pending = false) {
   el.className = `pill ${pending ? "neutral" : ["AC", "OK", "SUBMITTED", "AI"].includes(status) ? "ok" : "bad"}`;
 }
 
-function saveRunResultState(state) {
-  try {
-    localStorage.setItem(RUN_RESULT_STORAGE_KEY, JSON.stringify({
-      ...state,
-      savedAt: Date.now(),
-    }));
-  } catch (error) {
-    console.warn("儲存執行結果失敗", error);
-  }
-}
-
-function restoreRunResultState() {
-  try {
-    const state = JSON.parse(localStorage.getItem(RUN_RESULT_STORAGE_KEY) || "null");
-    if (!state || !state.result) return;
-
-    lastSubmittedExpectedOutput = state.expectedOutput || "";
-
-    showResult(state.result, {
-      persist: false,
-      testSource: state.testSource || activeTestSource,
-      expectedOutput: state.expectedOutput || "",
-    });
-  } catch (error) {
-    console.warn("還原執行結果失敗", error);
-    localStorage.removeItem(RUN_RESULT_STORAGE_KEY);
-  }
-}
-
 async function request(url, options = {}) {
   const response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
   const data = await response.json();
@@ -778,60 +1049,35 @@ function validUvaProblemId(value) {
   return (number >= 100 && number <= 1800) || (number >= 10000 && number <= 13400);
 }
 
-function showResult(result, options = {}) {
-  const persist = options.persist !== false;
-  const resultTestSource = options.testSource || activeTestSource;
-  const expectedForDiff = options.expectedOutput !== undefined
-    ? options.expectedOutput
-    : (lastSubmittedExpectedOutput || $("expected").value);
-
+function showResult(result) {
   lastRunResult = result;
-
-  if (persist) {
-    saveRunResultState({
-      result,
-      testSource: resultTestSource,
-      expectedOutput: expectedForDiff,
-    });
-  }
-
   $("output").classList.remove("ai-output");
   setVerdict(result.status || "SE");
-
   const isUva = Boolean(result.uva_submission_id);
   $("resultMeta").hidden = false;
-
-  const localSourceNames = {
-    sample: "題目範例",
-    udebug: "uDebug",
-    ai: "AI 測資",
-    custom: "自訂測資",
-  };
-
+  const localSourceNames = {sample: "題目範例", udebug: "uDebug", ai: "AI 測資", custom: "自訂測資"};
   $("resultSource").textContent = isUva
     ? `UVA ${result.problem_id || ""}`.trim()
-    : `本機 — ${localSourceNames[resultTestSource] || resultTestSource}`;
-
+    : `本機 — ${localSourceNames[activeTestSource] || activeTestSource}`;
   $("resultId").textContent = result.uva_submission_id || result.submission_id || "—";
   $("resultVerdict").textContent = result.verdict || result.status || "—";
-  $("resultTime").textContent = result.cpu_time || "—";
-
+  $("resultTime").textContent = result.runner ? `${result.cpu_time || "—"} · ${result.runner}` : (result.cpu_time || "—");
   $("output").classList.remove("diff-output");
-
+  const expectedForDiff = lastSubmittedExpectedOutput || $("expected").value;
   if (!isUva && result.status === "WA" && expectedForDiff) {
     renderWrongAnswerDiff(result.stdout || "", expectedForDiff, result.message);
     applyDiagnostics(result);
     return;
   }
-
   const parts = [];
+  if (result.runner) parts.push(`runner:\n${result.runner}`);
   if (result.message) parts.push(result.message);
   if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
   if (result.error_log) parts.push(`error:\n${result.error_log}`);
-
   $("output").textContent = parts.join("\n\n") || JSON.stringify(result, null, 2);
   applyDiagnostics(result);
 }
+
 
 function sanitizeAiHtml(html) {
   const template = document.createElement("template");
@@ -891,7 +1137,10 @@ function renderAiReadable(message, isError = false) {
   target.classList.toggle("ai-readable", !isError);
 
   if (!message) {
-    target.textContent = "AI " + "\u56de\u7b54\u6703\u986f\u793a\u5728\u9019\u88e1";
+    const empty = document.createElement("div");
+    empty.className = "ai-empty";
+    empty.textContent = "AI \u56de\u7b54\u6703\u986f\u793a\u5728\u9019\u88e1\u3002";
+    target.appendChild(empty);
     return;
   }
 
@@ -1129,37 +1378,72 @@ async function execute(kind) {
   }
 }
 
-function switchSidePanel(panel) {
+function switchSidePanel(panel, persist = true) {
+  const isTest = panel === "test";
+  const isPdf = panel === "pdf";
   const isAi = panel === "ai";
-  $("testTab").classList.toggle("active", !isAi);
+  $("testTab").classList.toggle("active", isTest);
+  $("pdfTab").classList.toggle("active", isPdf);
   $("aiTab").classList.toggle("active", isAi);
-  $("testTab").setAttribute("aria-selected", String(!isAi));
+  $("testTab").setAttribute("aria-selected", String(isTest));
+  $("pdfTab").setAttribute("aria-selected", String(isPdf));
   $("aiTab").setAttribute("aria-selected", String(isAi));
-  $("testPanel").hidden = isAi;
+  $("testPanel").hidden = !isTest;
+  $("pdfPane").hidden = !isPdf;
   $("aiPanel").hidden = !isAi;
-  localStorage.setItem("pi-oj-side-panel", panel);
+  if (!isPdf) {
+    $("pdfPane").classList.remove("expanded");
+    $("expandPdf").textContent = "放大閱讀";
+    document.querySelector("main").classList.remove("pdf-open");
+  }
+  if (persist) localStorage.setItem("pi-oj-side-panel", panel);
 }
 
 $("testTab").addEventListener("click", () => switchSidePanel("test"));
+$("pdfTab").addEventListener("click", openProblemPdf);
 $("aiTab").addEventListener("click", () => switchSidePanel("ai"));
-$("language").addEventListener("change", (event) => {
+$("language").addEventListener("change", async (event) => {
   saved[activeLanguage] = getCode();
-  activeLanguage = normalizeLanguage(event.target.value, effectiveJudge());
+  activeLanguage = normalizeLanguage(event.target.value, getJudge());
   event.target.value = activeLanguage;
-  localStorage.setItem(languageStorageKey(effectiveJudge()), activeLanguage);
-  setCode(saved[activeLanguage] || templates[activeLanguage] || "");
+  localStorage.setItem(languageStorageKey(getJudge()), activeLanguage);
+  setCode(codeForLanguage(activeLanguage));
   if (codeEditor && window.monaco) {
+    await loadMonacoContribution(currentLanguageMode());
     monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
+    applyEditorAppearance();
+  }
+  clearDiagnostics();
+});
+$("compilerMode").addEventListener("change", async () => {
+  saved[activeLanguage] = getCode();
+  if (getJudge() === "codeforces") $("compilerMode").value = "oj";
+  localStorage.setItem(`pi-oj-compiler-mode-${getJudge()}`, getCompilerMode());
+  renderLanguageOptions(getJudge());
+  setCode(codeForLanguage(activeLanguage));
+  if (getCompilerMode() === "simple") {
+    activateSimpleCompiler("已切換成簡易編譯器。你仍然可以正常寫程式與執行測試。", false);
+  } else if (window.monaco || codeEditor) {
+    await activateMonacoCompiler();
+  } else {
+    await initializeMonaco();
   }
   clearDiagnostics();
 });
 $("testSource").addEventListener("change", (event) => switchTestSource(event.target.value));
-$("judge").addEventListener("change", () => {
+$("judge").addEventListener("change", async () => {
   saved[activeLanguage] = getCode();
   localStorage.setItem("pi-oj-judge", getJudge());
-  renderLanguageOptions(effectiveJudge());
-  setCode(saved[activeLanguage] || templates[activeLanguage] || "");
-  if (codeEditor && window.monaco) monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
+  $("compilerMode").value = getJudge() === "codeforces" ? "oj" : (localStorage.getItem(`pi-oj-compiler-mode-${getJudge()}`) || "oj");
+  renderLanguageOptions(getJudge());
+  setCode(codeForLanguage(activeLanguage));
+  if (getCompilerMode() === "simple") {
+    activateSimpleCompiler(null, false);
+  } else if (window.monaco || codeEditor) {
+    await activateMonacoCompiler();
+  } else {
+    await initializeMonaco();
+  }
   $("problemId").value = getJudge() === "cpe"
     ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
     : localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
@@ -1195,13 +1479,15 @@ $("code").addEventListener("keydown", (event) => {
   }
 });
 $("run").addEventListener("click", () => execute("run"));
+$("cpeExamOpen").addEventListener("click", openCpeExamWindow);
 $("aiAsk").addEventListener("click", () => askAi("ask"));
 $("aiHint").addEventListener("click", () => askAi("hint"));
 $("aiDebug").addEventListener("click", () => askAi("debug"));
 $("aiTranslate").addEventListener("click", () => askAi("translate"));
 $("uva").addEventListener("click", () => execute("uva"));
 $("vimToggle").addEventListener("click", () => setVimMode(!vimMode));
-$("pdfToggle").addEventListener("click", openProblemPdf);
+if ($("pdfToggle")) $("pdfToggle").addEventListener("click", openProblemPdf);
+$("expandPdf").addEventListener("click", togglePdfExpand);
 $("closePdf").addEventListener("click", closeProblemPdf);
 $("themeToggle").addEventListener("click", () => {
   const next = root.dataset.theme === "dark" ? "light" : "dark";
@@ -1211,19 +1497,26 @@ $("themeToggle").addEventListener("click", () => {
 
 if (savedAiState.output) {
   setAiOutput(savedAiState.output, Boolean(savedAiState.isError), false);
+} else {
+  setAiOutput("", false, false);
 }
 
 renderCpeStarOptions();
+ensureCpeStarGroups().then((loaded) => {
+  renderCpeStarOptions();
+  if (!loaded) {
+    const empty = $("cpeStar")?.options?.[0];
+    if (empty) empty.textContent = "清單載入失敗";
+  }
+});
 initializeMonaco();
 const initialTestSource = ["sample", "udebug", "ai", "custom"].includes(localStorage.getItem("pi-oj-test-source")) ? localStorage.getItem("pi-oj-test-source") : "sample";
 $("testSource").value = testSourceLabels[initialTestSource] ? initialTestSource : "sample";
 syncTestSourceOptions();
 switchTestSource($("testSource").value, false);
 switchSidePanel(localStorage.getItem("pi-oj-side-panel") === "ai" ? "ai" : "test");
-restoreRunResultState();
 
 fetch("/api/health").then((r) => r.json()).then(() => {
   $("health").textContent = "Online";
   $("health").classList.add("ok");
 }).catch(() => { $("health").textContent = "Offline"; });
-
