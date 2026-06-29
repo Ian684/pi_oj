@@ -47,6 +47,67 @@ https://unremovable-unrepeatable-phuong.ngrok-free.dev
 
 If `ngrok-policy.yaml` exists, the script also applies it automatically. If it does not exist, the script prints a warning before starting ngrok without policy protection.
 
+## Maintenance Scripts
+
+```bash
+# Check local Monaco / Vim editor assets
+sh scripts/check-editor-assets.sh
+
+# Check editor assets through a running web service
+WEB_URL=http://127.0.0.1:8000 sh scripts/check-editor-assets.sh
+
+# Check web health and ngrok tunnel status
+sh scripts/check-ngrok.sh
+
+# Backup project config and CPE star list
+sh scripts/backup-data.sh
+
+# Optional Playwright smoke test
+BASE_URL=http://127.0.0.1:8000 node scripts/e2e-smoke.js
+```
+
+The backup script saves server-side project settings. CPE exam history lives in browser localStorage, so export it from the exam UI when you want to archive exam records.
+
+### E2E Smoke Test
+
+`scripts/e2e-smoke.js` is a small Playwright check for the main page and the CPE exam page. It opens the site in a real browser, switches the test/AI panels, checks that the editor area exists, and fails if important static resources return 4xx/5xx.
+
+This repository does not require committing `node_modules/`. Install Playwright only on the machine where you want to run the smoke test:
+
+```bash
+cd ~/pi_oj
+npm i -D playwright
+npx playwright install chromium
+```
+
+If Playwright says the OS is missing browser dependencies, install them once:
+
+```bash
+sudo npx playwright install-deps
+```
+
+Then start Pi OJ and run the smoke test:
+
+```bash
+cd ~/pi_oj
+docker compose up -d web worker
+BASE_URL=http://127.0.0.1:8000 node scripts/e2e-smoke.js
+```
+
+Expected success output:
+
+```text
+E2E smoke test passed.
+```
+
+For ngrok or another host, change `BASE_URL`:
+
+```bash
+BASE_URL=https://your-ngrok-url node scripts/e2e-smoke.js
+```
+
+Do not commit `node_modules/`, `package.json`, or `package-lock.json`; they are ignored because Playwright is currently only a local smoke-test dependency. If you decide to make E2E a formal npm-managed workflow later, remove `package.json` and `package-lock.json` from `.gitignore` and commit them, but still keep `node_modules/` out of git.
+
 ## Environment
 
 `.env` must be placed at the project root, for example `~/pi_oj/.env`.

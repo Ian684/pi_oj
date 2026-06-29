@@ -18,8 +18,7 @@ worker = Celery(
     backend=os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/0"),
 )
 worker.conf.update(result_expires=3600, task_track_started=True)
-# Celery CLI 預設會在 tasks 模組裡找 app/celery 這類常見名稱。
-# 保留 worker 給既有程式 import，同時提供 app 讓 `celery -A tasks worker` 穩定啟動。
+# Keep a conventional Celery app alias for imports and CLI compatibility.
 app = worker
 
 SANDBOX_ROOT = Path("/sandboxes")
@@ -34,6 +33,9 @@ STDOUT_CAPTURE_LIMIT = int(os.getenv("OJ_STDOUT_CAPTURE_LIMIT", "120000"))
 STDERR_CAPTURE_LIMIT = int(os.getenv("OJ_STDERR_CAPTURE_LIMIT", "40000"))
 DEFAULT_RUN_MEM_LIMIT = os.getenv("OJ_DEFAULT_MEM_LIMIT", "128m")
 JAVA_RUN_MEM_LIMIT = os.getenv("OJ_JAVA_MEM_LIMIT", "384m")
+DEFAULT_RUN_TIMEOUT = int(os.getenv("OJ_RUN_TIMEOUT", "5"))
+JAVA_RUN_TIMEOUT = int(os.getenv("OJ_JAVA_RUN_TIMEOUT", "8"))
+GO_RUN_TIMEOUT = int(os.getenv("OJ_GO_RUN_TIMEOUT", "8"))
 
 RUNNER_WRAPPER = r"""#!/usr/bin/env python3
 import os
@@ -120,7 +122,13 @@ def normalize_output_without_blank_lines(value: str) -> str:
 def truncate_context(value: str, limit: int = 12_000) -> str:
     if len(value) <= limit:
         return value
-    return value[:limit] + "\n...（內容過長，已截斷）"
+    return value[:limit] + "\n... output truncated ..."
+
+
+def user_error(summary: str, exc: Exception | None = None) -> str:
+    if exc is None:
+        return summary
+    return f"{summary}\n{type(exc).__name__}: {exc}"
 
 
 def extract_openai_text(data: dict) -> str:
@@ -157,12 +165,12 @@ def download_uva_pdf_text(problem_number: int) -> tuple[str, str]:
         )
         response.raise_for_status()
     except requests.Timeout as exc:
-        raise RuntimeError("UVA 官方 PDF 下載逾時（60 秒），請稍後再試") from exc
+        raise RuntimeError("Timed out while downloading UVA PDF.") from exc
     except requests.RequestException as exc:
-        raise RuntimeError(f"UVA 官方 PDF 下載失敗：{exc}") from exc
+        raise RuntimeError(f"Failed to download UVA PDF: {exc}") from exc
 
     if not response.content.startswith(b"%PDF"):
-        raise RuntimeError("UVA 回應不是有效的 PDF，可能是題號不存在或網站暫時阻擋")
+        raise RuntimeError("UVA did not return a valid PDF.")
 
     reader = PdfReader(BytesIO(response.content))
 
@@ -182,7 +190,7 @@ def parse_codeforces_problem_id(value: str) -> tuple[str, str]:
     text = (value or "").strip().upper().replace("-", "/")
     match = re.fullmatch(r"(\d{1,6})\s*/?\s*([A-Z][0-9A-Z]?)", text)
     if not match:
-        raise ValueError("Codeforces problem id must look like 1843A or 1843/A")
+        raise ValueError("Codeforces 題號格式應類似 1843A 或 1843/A")
     return match.group(1), match.group(2)
 
 
@@ -330,7 +338,7 @@ def fetch_codeforces_sample(problem_id: str) -> dict:
         "problem_id": problem_id,
         "input_data": "\n".join(inputs)[:1_000_000],
         "expected_output": "\n".join(outputs)[:1_000_000],
-        "message": "Loaded sample tests from Codeforces problem page",
+        "message": "已從 Codeforces 題目頁載入範例測資。",
     }
 
 
@@ -375,7 +383,7 @@ def is_pdf_noise_line(line: str) -> bool:
         or re.search(r"Universidad\s+de\s+V\s*alladolid\s+OJ", compact, re.I)
         or re.search(r"UVa\s+Online\s+Judge.*\d+\s*/\s*\d+\s*$", compact, re.I)
         or re.search(r"^\d+\s*/\s*\d+\s*$", compact)
-        or re.search(r"^\d+\s*[-–]\s+.+\s+\d+\s*/\s*\d+\s*$", compact)
+        or re.search(r"^\d+\s*[-–—]\s+.+\s+\d+\s*/\s*\d+\s*$", compact)
         or re.fullmatch(r"\d+\s*/\s*\d+", compact)
     )
 
@@ -398,7 +406,7 @@ def extract_uva_problem_statement(problem_number: int) -> str:
         text = text[:sample_heading.start()]
     statement = clean_problem_statement_text(text)
     if not statement:
-        raise RuntimeError("無法從 UVA PDF 抽出題目敘述")
+        raise RuntimeError("Cannot parse UVA problem statement from PDF.")
     return statement[:80_000]
 
 
@@ -601,7 +609,7 @@ Optional context. Ignore this section unless it is clearly relevant:
 - Explain input/output or formatting traps if likely.
 - Give a small implementation plan, not full code.
 - Do not provide a full accepted solution.
-- Suggested structure: 題意摘要, 核心想法, 做法步驟, 複雜度, 常見陷阱, 下一步."""
+- Suggested structure: problem summary, key observation, algorithm, pitfalls, next steps."""
     else:
         instruction = """Help the user debug the current program.
 - Prioritize verdict, stdout, expected stdout, error log, and code.
@@ -700,10 +708,12 @@ def run_container(
         sock = container.attach_socket(params={"stdin": 1, "stream": 1})
         container.start()
         try:
+            # docker-py returns a SocketIO-like wrapper here; older versions require
+            # the underlying socket for stdin, so keep the private fallback isolated.
+            raw_sock = getattr(sock, "_sock", sock)
             if stdin_data:
-                sock._sock.sendall(stdin_data.encode("utf-8"))
-            # 即使沒有測資也要送出 EOF，否則讀到 EOF 的程式會卡到 TLE。
-            sock._sock.shutdown(1)
+                raw_sock.sendall(stdin_data.encode("utf-8"))
+            raw_sock.shutdown(1)
         except OSError:
             # Some programs exit before stdin is fully sent. Keep the actual verdict
             # from container.wait() instead of failing the whole runner.
@@ -749,7 +759,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
     unsupported_local = {}
     if not runner_language:
         label = unsupported_local.get(language, language)
-        return {"submission_id": submission_id, "status": "SE", "error_log": f"Local runner for {label} is not installed yet"}
+        return {"submission_id": submission_id, "status": "SE", "error_log": f"本機尚未安裝 {label} 的執行器。"}
     language_specs = {
         "c": {"filename": "solution.c", "compile": ["gcc", "-std=c11", "-O2", "-pipe", "solution.c", "-lm", "-o", "solution"], "run": ["./solution"]},
         "pascal": {"filename": "solution.pas", "compile": ["fpc", "-O2", "-osolution", "solution.pas"], "run": ["./solution"]},
@@ -759,11 +769,11 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
         "cpp23": {"filename": "solution.cpp", "compile": ["g++", "-std=c++23", "-O2", "-pipe", "solution.cpp", "-o", "solution"], "run": ["./solution"]},
         "py": {"filename": "solution.py", "run": ["python3", "-I", "-B", "solution.py"]},
         "pypy": {"filename": "solution.py", "run": ["pypy3", "solution.py"]},
-        "java": {"filename": "Main.java", "compile": ["javac", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m"},
+        "java": {"filename": "Main.java", "compile": ["javac", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m", "run_timeout": JAVA_RUN_TIMEOUT},
         "exam_c_mingw": {"filename": "main.c", "compile": ["gcc", "-std=gnu11", "-O2", "-pipe", "main.c", "-lm", "-o", "main"], "run": ["./main"], "label": "C (MinGW GCC 6.3.0 compatible: GNU11)"},
         "exam_cpp_mingw": {"filename": "main.cpp", "compile": ["g++", "-std=gnu++14", "-O2", "-pipe", "main.cpp", "-o", "main"], "run": ["./main"], "label": "C++ (MinGW GCC 6.3.0 compatible: GNU++14)"},
-        "exam_java8": {"filename": "Main.java", "compile": ["javac", "--release", "8", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "label": "Java (AdoptOpenJDK 8 compatible: javac --release 8)", "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m"},
-        "exam_java11": {"filename": "Main.java", "compile": ["javac", "--release", "11", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "label": "Java (AdoptOpenJDK 11 compatible: javac --release 11)", "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m"},
+        "exam_java8": {"filename": "Main.java", "compile": ["javac", "--release", "8", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "label": "Java (AdoptOpenJDK 8 compatible: javac --release 8)", "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m", "run_timeout": JAVA_RUN_TIMEOUT},
+        "exam_java11": {"filename": "Main.java", "compile": ["javac", "--release", "11", "Main.java"], "run": ["java", "-Xmx256m", "Main"], "label": "Java (AdoptOpenJDK 11 compatible: javac --release 11)", "mem_limit": JAVA_RUN_MEM_LIMIT, "tmpfs_size": "64m", "run_timeout": JAVA_RUN_TIMEOUT},
         "exam_py396": {"filename": "main.py", "run": ["python3", "-I", "-B", "main.py"], "label": "Python (Python 3.9.6 compatible runner; uses container python3)"},
         "js": {"filename": "solution.js", "run": ["node", "solution.js"]},
         "js_v8": {"filename": "solution.js", "extra_files": {"cf_v8_runner.js": "const fs = require('fs');\nconst lines = fs.readFileSync(0, 'utf8').replace(/\\r\\n/g, '\\n').split('\\n');\nlet index = 0;\nglobal.readline = () => { if (index >= lines.length) throw new Error('EOF'); return lines[index++]; };\nrequire('./solution.js');\n"}, "run": ["node", "cf_v8_runner.js"]},
@@ -774,11 +784,11 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
         "d": {"filename": "solution.d", "compile": ["ldc2", "-O2", "solution.d", "-of=solution"], "run": ["./solution"]},
         "rust2021": {"filename": "solution.rs", "compile": ["rustc", "--edition=2021", "-O", "solution.rs", "-o", "solution"], "run": ["./solution"]},
         "rust2024": {"filename": "solution.rs", "compile": ["rustc", "--edition=2024", "-O", "solution.rs", "-o", "solution"], "run": ["./solution"]},
-        "go": {"filename": "solution.go", "compile": ["go", "build", "-o", "solution", "solution.go"], "run": ["./solution"], "mem_limit": os.getenv("OJ_GO_MEM_LIMIT", "256m"), "tmpfs_size": "96m"},
+        "go": {"filename": "solution.go", "compile": ["go", "build", "-o", "solution", "solution.go"], "run": ["./solution"], "mem_limit": os.getenv("OJ_GO_MEM_LIMIT", "256m"), "tmpfs_size": "96m", "run_timeout": GO_RUN_TIMEOUT},
     }
     spec = language_specs.get(runner_language)
     if not spec:
-        return {"submission_id": submission_id, "status": "SE", "error_log": "Unsupported language"}
+        return {"submission_id": submission_id, "status": "SE", "error_log": "不支援的程式語言。"}
 
     container_dir = SANDBOX_ROOT / submission_id
     host_dir = HOST_SANDBOX_ROOT / submission_id
@@ -807,7 +817,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
                 return {"submission_id": submission_id, "status": "CE", "stdout": "", "error_log": compile_error[:20_000]}
         command = spec["run"]
 
-        exit_code, stdout, stderr, run_meta = run_container(container_dir, host_dir, command, input_data, timeout=5, mem_limit=mem_limit, tmpfs_size=tmpfs_size)
+        exit_code, stdout, stderr, run_meta = run_container(container_dir, host_dir, command, input_data, timeout=spec.get("run_timeout", DEFAULT_RUN_TIMEOUT), mem_limit=mem_limit, tmpfs_size=tmpfs_size)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         message = ""
         limit_note = output_limit_message(run_meta)
@@ -826,7 +836,7 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
                 status = "AC"
             elif normalize_output_without_blank_lines(stdout) == normalize_output_without_blank_lines(expected_output):
                 status = "AC"
-                message = "Only blank lines differ; accepted as AC."
+                message = "只有空白行不同，已視為 AC。"
             else:
                 status = "WA"
         elif not expected_output:
@@ -839,11 +849,11 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
             payload["message"] = message
         return payload
     except ImageNotFound:
-        return {"submission_id": submission_id, "status": "SE", "error_log": f"Judge image {JUDGE_IMAGE} was not found; build the judge image first"}
+        return {"submission_id": submission_id, "status": "SE", "error_log": f"找不到評測映像檔 {JUDGE_IMAGE}，請先建置 judge image。"}
     except ContainerError as exc:
-        return {"submission_id": submission_id, "status": "SE", "error_log": str(exc)}
+        return {"submission_id": submission_id, "status": "SE", "error_log": user_error("本機評測容器執行失敗。", exc)}
     except Exception as exc:
-        return {"submission_id": submission_id, "status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
+        return {"submission_id": submission_id, "status": "SE", "error_log": user_error("本機評測發生系統錯誤。", exc)}
     finally:
         shutil.rmtree(container_dir, ignore_errors=True)
 
@@ -855,8 +865,6 @@ class UvaClient:
         self.username = username
         self.password = password
         self.session = requests.Session()
-        # UVA 使用較舊的 Joomla/Community Builder 登入模組；使用一般瀏覽器標頭
-        # 可避免部分站台層或模組層把非瀏覽器 client 當成無效登入。
         self.session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 "
@@ -898,7 +906,7 @@ class UvaClient:
         soup = BeautifulSoup(page.text, "html.parser")
         form = self.login_form(soup)
         if form is None:
-            raise RuntimeError("找不到 UVA 登入表單；網站流程可能已改變")
+            raise RuntimeError("Cannot find UVA login form.")
 
         payload = self.hidden_fields(form)
         payload.update({
@@ -920,13 +928,10 @@ class UvaClient:
         )
         response.raise_for_status()
 
-        # POST 回應不一定包含 Logout，因此再讀一次首頁驗證 session。
         verify = self.session.get(f"{self.BASE_URL}/", timeout=20)
         verify.raise_for_status()
         verify_soup = BeautifulSoup(verify.text, "html.parser")
         if self.login_form(verify_soup) is not None:
-            # UVA 對部分非瀏覽器登入回傳通用帳密錯誤。使用真正的 Chromium
-            # 完成登入，再把 cookie 複製回 requests session 供提交流程使用。
             self.login_with_browser(url)
 
     def login_with_browser(self, url: str) -> None:
@@ -936,14 +941,14 @@ class UvaClient:
             from selenium.webdriver.chrome.service import Service
             from selenium.webdriver.support.ui import WebDriverWait
         except ImportError as exc:
-            raise RuntimeError("HTTP 登入失敗，且 worker 尚未安裝 Selenium") from exc
+            raise RuntimeError("HTTP login failed because Selenium is not available in worker.") from exc
 
         chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
         driver_path = shutil.which("chromedriver")
         if not chromium_path:
-            raise RuntimeError("worker 內找不到 Chromium；請確認 Dockerfile 已安裝 chromium")
+            raise RuntimeError("worker cannot find Chromium; rebuild Dockerfile with chromium.")
         if not driver_path:
-            raise RuntimeError("worker 內找不到 chromedriver；請確認 Dockerfile 已安裝 chromium-driver")
+            raise RuntimeError("worker cannot find chromedriver; rebuild Dockerfile with chromium-driver.")
 
         options = webdriver.ChromeOptions()
         options.binary_location = chromium_path
@@ -981,11 +986,11 @@ class UvaClient:
                         item.querySelector('[name="passwd"]') &&
                         item.getClientRects().length > 0
                     );
-                    if (!form) return {ok: false, error: '找不到可見的 UVA 登入表單'};
+                    if (!form) return {ok: false, error: 'Cannot find UVA login form'};
                     const usernameInput = form.querySelector('[name="username"]');
                     const passwordInput = form.querySelector('[name="passwd"]');
                     const submitButton = form.querySelector('[name="Submit"], input[type="submit"], button[type="submit"]');
-                    if (!submitButton) return {ok: false, error: '找不到 UVA 登入按鈕'};
+                    if (!submitButton) return {ok: false, error: 'Cannot find UVA login submit button'};
                     usernameInput.value = username;
                     passwordInput.value = password;
                     usernameInput.dispatchEvent(new Event('input', {bubbles: true}));
@@ -1000,10 +1005,9 @@ class UvaClient:
                     self.password,
                 )
             except StaleElementReferenceException:
-                # 已觸發登入導頁時，舊文件失效是預期結果。
                 login_result = {"ok": True}
             if login_result and not login_result.get("ok"):
-                raise RuntimeError(login_result.get("error", "UVA 登入表單設定失敗"))
+                raise RuntimeError(login_result.get("error", "UVA login form submission failed."))
 
             def login_finished(browser) -> bool:
                 try:
@@ -1027,12 +1031,12 @@ class UvaClient:
                 alert = driver.switch_to.alert
                 alert_text = alert.text
                 alert.accept()
-                raise RuntimeError(f"UVA 瀏覽器拒絕登入：{alert_text}")
+                raise RuntimeError(f"UVA browser login alert: {alert_text}")
             page_soup = BeautifulSoup(driver.page_source, "html.parser")
             if self.login_form(page_soup) is not None:
                 detail = self.page_error(page_soup)
-                suffix = f"；UVA 訊息：{detail}" if detail else ""
-                raise RuntimeError(f"UVA 瀏覽器登入仍失敗{suffix}")
+                suffix = f"; page error: {detail}" if detail else ""
+                raise RuntimeError(f"UVA browser login failed{suffix}")
 
             self.session.cookies.clear()
             for cookie in driver.get_cookies():
@@ -1046,11 +1050,11 @@ class UvaClient:
             verify = self.session.get(f"{self.BASE_URL}/", timeout=20)
             verify.raise_for_status()
             if self.login_form(BeautifulSoup(verify.text, "html.parser")) is not None:
-                raise RuntimeError("Chromium 已登入，但 session cookie 無法交給提交程序")
+                raise RuntimeError("Chromium login did not produce usable session cookies.")
         except RuntimeError:
             raise
         except Exception as exc:
-            raise RuntimeError(f"UVA Chromium 登入錯誤：{type(exc).__name__}: {exc}") from exc
+            raise RuntimeError(f"UVA Chromium login failed: {type(exc).__name__}: {exc}") from exc
         finally:
             if driver is not None:
                 driver.quit()
@@ -1069,7 +1073,7 @@ class UvaClient:
             None,
         )
         if submit_form is None:
-            raise RuntimeError("已登入，但找不到 UVA 提交表單；提交頁面可能已改版")
+            raise RuntimeError("Browser session does not have a usable UVA submit form.")
         payload = self.hidden_fields(submit_form)
         language = {
             "cpp": "uva_cpp11", "cpp17": "uva_cpp11", "cpp20": "uva_cpp11", "c": "uva_c", "py": "uva_py3", "java": "uva_java",
@@ -1100,12 +1104,11 @@ class UvaClient:
         body = response.text.lower()
         failure_words = ("invalid problem", "not authorized", "please login", "submission error")
         if any(word in body for word in failure_words):
-            raise RuntimeError("UVA 未確認提交成功，請查看 worker log；網站表單可能已改版")
-        # HTTP 模式無法可靠確認 UVA 是否真的建立 submission，不回報假成功。
+            raise RuntimeError("UVA HTTP submit response looks invalid; check worker log or use browser submit.")
         return {
             "status": "UNKNOWN",
             "problem_id": problem_id,
-            "message": "UVA 已接收 HTTP 請求，但無法確認是否建立 submission；請使用 browser 模式",
+            "message": "UVA accepted the HTTP request, but the result is unknown; browser mode is recommended.",
         }
 
     def submit_with_browser(self, problem_id: str, language: str, code: str) -> dict:
@@ -1122,7 +1125,7 @@ class UvaClient:
         chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
         driver_path = shutil.which("chromedriver")
         if not chromium_path or not driver_path:
-            raise RuntimeError("worker 缺少 Chromium 或 chromedriver")
+            raise RuntimeError("worker cannot find Chromium or chromedriver.")
 
         options = webdriver.ChromeOptions()
         options.binary_location = chromium_path
@@ -1140,7 +1143,7 @@ class UvaClient:
             if len(cells) < 6 or not cells[0].text.strip().isdigit():
                 return None
 
-            # UVA 的 Problem 表頭跨兩欄（題號＋標題），因此從尾端定位較可靠：
+            # UVA rows may include a variable number of problem-title cells.
             # [...problem cells, verdict, language, run time, submission date]
             verdict_index = len(cells) - 4
             return {
@@ -1196,7 +1199,7 @@ class UvaClient:
             )
             return next((status for marker, status in mappings if marker in normalized), "JUDGED")
 
-        stage = "啟動 Chromium"
+        stage = "start Chromium"
         try:
             driver = webdriver.Chrome(service=Service(executable_path=driver_path), options=options)
             driver.set_page_load_timeout(30)
@@ -1212,8 +1215,8 @@ class UvaClient:
                 },
             )
 
-            stage = "載入登入 cookie"
-            # 先進入同網域，再加入登入階段取得的 cookies。
+            stage = "load UVA cookies"
+            # Open the base domain before adding cookies; Selenium requires this.
             driver.get(f"{self.BASE_URL}/")
             for cookie in self.session.cookies:
                 item = {
@@ -1232,15 +1235,15 @@ class UvaClient:
                 None,
             )
             if not my_submissions_url:
-                raise RuntimeError("登入 cookie 已失效，找不到 My Submissions")
+                raise RuntimeError("Login cookies are valid, but My Submissions link was not found.")
 
-            stage = "讀取提交前紀錄"
+            stage = "read previous UVA submissions"
             driver.get(my_submissions_url)
             previous = newest_submission()
             previous_id = previous["id"] if previous else None
 
             submit_url = f"{self.BASE_URL}/index.php?option=com_onlinejudge&Itemid=25&page=submit_problem"
-            stage = "載入提交表單"
+            stage = "load UVA submit form"
             driver.get(submit_url)
             language = {
                 "cpp": "uva_cpp11", "cpp17": "uva_cpp11", "cpp20": "uva_cpp11", "c": "uva_c", "py": "uva_py3", "java": "uva_java",
@@ -1257,7 +1260,7 @@ class UvaClient:
             if not language_id:
                 raise RuntimeError(f"UVA submit language id is not configured for {language}")
             submit_page_url = driver.current_url
-            stage = "送出 UVA 表單"
+            stage = "submit UVA form"
             try:
                 form_result = driver.execute_script(
                     """
@@ -1269,7 +1272,7 @@ class UvaClient:
                         item.elements.namedItem('language') &&
                         item.elements.namedItem('code')
                     );
-                    if (!form) return {ok: false, error: '找不到 UVA 提交表單'};
+                    if (!form) return {ok: false, error: 'Cannot find UVA submit form'};
 
                     const problem = form.elements.namedItem('localid');
                     const code = form.elements.namedItem('code');
@@ -1277,18 +1280,18 @@ class UvaClient:
                     code.value = sourceCode;
 
                     const languageFields = Array.from(form.querySelectorAll('[name="language"]'));
-                    if (!languageFields.length) return {ok: false, error: '缺少 language 欄位'};
+                    if (!languageFields.length) return {ok: false, error: 'Cannot find language field'};
                     if (languageFields[0].tagName.toLowerCase() === 'select') {
                         languageFields[0].value = languageId;
                         if (languageFields[0].value !== languageId) {
-                            return {ok: false, error: `找不到語言代碼 ${languageId}`};
+                            return {ok: false, error: `Cannot select UVA language id ${languageId}`};
                         }
                         languageFields[0].dispatchEvent(new Event('change', {bubbles: true}));
                     } else {
                         const target = languageFields.find((field) => field.value === languageId) ||
                             (languageFields.length === 1 ? languageFields[0] : null);
                         if (!target) {
-                            return {ok: false, error: `找不到語言代碼 ${languageId}；可用值：${languageFields.map((f) => f.value).join(',')}`};
+                            return {ok: false, error: `Cannot select UVA language id ${languageId}; available values: ${languageFields.map((f) => f.value).join(',')}`};
                         }
                         if (target.type === 'radio' || target.type === 'checkbox') target.checked = true;
                         else target.value = languageId;
@@ -1298,7 +1301,7 @@ class UvaClient:
                     problem.dispatchEvent(new Event('input', {bubbles: true}));
                     code.dispatchEvent(new Event('input', {bubbles: true}));
                     const button = form.querySelector('input[type="submit"], button[type="submit"]');
-                    if (!button) return {ok: false, error: '找不到 UVA 提交按鈕'};
+                    if (!button) return {ok: false, error: 'Cannot find UVA submit button'};
 
                     setTimeout(() => {
                         if (typeof form.requestSubmit === 'function') form.requestSubmit(button);
@@ -1311,27 +1314,24 @@ class UvaClient:
                     code,
                 )
             except StaleElementReferenceException:
-                # 表單已送出並導頁時，舊頁面失效是預期結果。
                 pass
             else:
                 if form_result and not form_result.get("ok"):
-                    raise RuntimeError(form_result.get("error", "UVA 提交表單設定失敗"))
+                    raise RuntimeError(form_result.get("error", "UVA submit form failed."))
             try:
                 WebDriverWait(driver, 15).until(lambda browser: browser.current_url != submit_page_url)
             except TimeoutException:
-                # 某些 UVA 回應會回到相同 URL；後續仍以 My Submissions 驗證。
                 pass
 
             try:
                 alert = driver.switch_to.alert
                 alert_text = alert.text
                 alert.accept()
-                raise RuntimeError(f"UVA 拒絕提交：{alert_text}")
+                raise RuntimeError(f"UVA submit alert: {alert_text}")
             except NoAlertPresentException:
                 pass
 
-            # 第一階段：只有 My Submissions 出現新 ID 才算真正送出。
-            stage = "確認新 submission ID"
+            stage = "find UVA submission ID"
             created = None
             for _ in range(15):
                 driver.get(my_submissions_url)
@@ -1342,10 +1342,9 @@ class UvaClient:
                 time.sleep(2)
 
             if created is None:
-                raise RuntimeError("提交表單已送出，但 My Submissions 在 30 秒內沒有出現新紀錄")
+                raise RuntimeError("UVA submission was sent, but no new submission row was found within 30 seconds.")
 
-            # 第二階段：鎖定同一個 ID 等待最終 verdict，避免抓到其他提交。
-            stage = "等待 UVA 最終判題"
+            stage = "read UVA verdict"
             submission_id = created["id"]
             for _ in range(30):
                 driver.get(my_submissions_url)
@@ -1359,7 +1358,7 @@ class UvaClient:
                             "uva_submission_id": submission_id,
                             "verdict": current["verdict"],
                             "cpu_time": current["run_time"],
-                            "message": f"UVA #{submission_id}：{current['verdict']}",
+                            "message": f"UVA #{submission_id}: {current['verdict']}",
                         }
                 time.sleep(2)
 
@@ -1368,12 +1367,12 @@ class UvaClient:
                 "problem_id": problem_id,
                 "uva_submission_id": submission_id,
                 "verdict": created["verdict"],
-                "message": f"UVA 已建立 submission #{submission_id}，但 60 秒內尚未完成判題",
+                "message": f"UVA submission #{submission_id} is still judging after 60 seconds.",
             }
         except RuntimeError:
             raise
         except Exception as exc:
-            raise RuntimeError(f"UVA 瀏覽器提交錯誤（階段：{stage}）：{type(exc).__name__}: {exc}") from exc
+            raise RuntimeError(f"UVA browser submit failed at {stage}: {type(exc).__name__}: {exc}") from exc
         finally:
             if driver is not None:
                 driver.quit()
@@ -1385,7 +1384,7 @@ def validate_problem_number(problem_id: str) -> int:
     except (TypeError, ValueError) as exc:
         raise ValueError("UVA 題號格式錯誤") from exc
     if not (100 <= problem_number <= 1800 or 10_000 <= problem_number <= 13_400):
-        raise ValueError("UVA 題號必須介於 100–1800 或 10000–13400")
+        raise ValueError("UVA 題號必須介於 100-1800 或 10000-13400")
     return problem_number
 
 
@@ -1398,12 +1397,11 @@ def fetch_uva_sample(problem_number: int) -> dict:
             and re.search(r"(?im)^\s*Sample\s+Output\s*$", value)
         )
 
-    # layout 模式比較會保留 PDF 裡的垂直間距；plain 當備援，避免少數舊 PDF 抽不到標題。
     text = layout_text if has_sample_headings(layout_text) else plain_text
     input_heading = re.search(r"(?im)^\s*Sample\s+Input\s*$", text)
     output_heading = re.search(r"(?im)^\s*Sample\s+Output\s*$", text)
     if not input_heading or not output_heading or output_heading.start() <= input_heading.end():
-        raise RuntimeError("官方 PDF 中找不到 Sample Input / Sample Output；此題可能沒有標準範例格式")
+        raise RuntimeError("Cannot find Sample Input / Sample Output in the UVA PDF.")
 
     def clean_sample_section(section: str) -> str:
         lines = []
@@ -1425,8 +1423,7 @@ def fetch_uva_sample(problem_number: int) -> dict:
                 lines.append("")
                 continue
             skip_blank_after_page_noise = False
-            # pypdf layout 模式會為了還原視覺欄位塞入大量水平空白；
-            # Sample 測資保留垂直空行，只去掉跨頁/頁首頁尾附近的空白。
+            # pypdf layout output may contain table-like spacing; collapse it.
             lines.append(re.sub(r"[ \t]{2,}", " ", line.strip()))
 
         while lines and not lines[0].strip():
@@ -1439,14 +1436,14 @@ def fetch_uva_sample(problem_number: int) -> dict:
     input_data = clean_sample_section(text[input_heading.end():output_heading.start()])
     expected_output = clean_sample_section(text[output_heading.end():])
     if not input_data or not expected_output:
-        raise RuntimeError("官方 PDF 的範例輸入或輸出為空")
+        raise RuntimeError("UVA PDF sample input/output is empty.")
     return {
         "status": "FETCHED",
         "source": "sample",
         "problem_id": str(problem_number),
         "input_data": input_data[:1_000_000],
         "expected_output": expected_output[:1_000_000],
-        "message": "已從 UVA 官方 PDF 載入題目範例",
+        "message": "已從 UVA PDF 載入題目範例測資。",
     }
 
 
@@ -1479,19 +1476,17 @@ def fetch_udebug_test(problem_number: int) -> dict:
         preflight = requests.get(udebug_url, headers={"User-Agent": user_agent}, timeout=(5, 12))
         if preflight.status_code in {403, 429, 503} or is_udebug_blocked(preflight.text):
             raise RuntimeError(
-                "uDebug 目前被 Cloudflare / 防機器人機制擋住，無法由後端自動抓測資；"
-                "請先用「開啟 uDebug」手動複製，或改用自訂測資"
+                "uDebug blocked automated access. Open uDebug manually and copy the test data if needed."
             )
     except requests.Timeout as exc:
-        raise RuntimeError("uDebug 預檢逾時（12 秒），先停止等待；請稍後再試或手動開啟 uDebug") from exc
+        raise RuntimeError("uDebug timed out after 12 seconds; try again later or open uDebug manually.") from exc
     except requests.RequestException:
-        # 有些環境 requests 連不上但 Chromium 可開；保留 Selenium 後援。
         pass
 
     chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
     driver_path = shutil.which("chromedriver")
     if not chromium_path or not driver_path:
-        raise RuntimeError("worker 缺少 Chromium 或 chromedriver")
+        raise RuntimeError("worker cannot find Chromium or chromedriver.")
 
     options = webdriver.ChromeOptions()
     options.binary_location = chromium_path
@@ -1504,7 +1499,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
     options.add_argument(f"--user-agent={user_agent}")
 
     driver = None
-    stage = "啟動 Chromium"
+    stage = "start Chromium"
     try:
         driver = webdriver.Chrome(service=Service(executable_path=driver_path), options=options)
         driver.set_page_load_timeout(25)
@@ -1518,28 +1513,28 @@ def fetch_udebug_test(problem_number: int) -> dict:
                 "*://*.googletagmanager.com/*",
             ]},
         )
-        stage = "開啟 uDebug 題目頁"
+        stage = "open uDebug page"
         driver.get(udebug_url)
 
         page_text = driver.execute_script("return document.body?.innerText || '';")
         if is_udebug_blocked(page_text):
             raise RuntimeError(
-                "uDebug 暫時阻擋自動存取（Cloudflare / 防機器人頁），請用「開啟 uDebug」手動複製或改用自訂測資"
+                "uDebug blocked automated access. Open uDebug manually and copy the test data if needed."
             )
 
-        stage = "等待公開測資清單"
+        stage = "find uDebug test list"
         WebDriverWait(driver, 18).until(
             lambda browser: browser.execute_script(
                 """
                 const text = document.body?.innerText || '';
                 if (/Access denied|Attention Required|Sorry, you have been blocked|Cloudflare Ray ID|Just a moment/i.test(text)) {
-                    throw new Error('uDebug 被 Cloudflare / 防機器人頁阻擋');
+                    throw new Error('uDebug blocked automated access');
                 }
                 return Boolean(document.querySelector('a.input_desc[data-id]'));
                 """
             )
         )
-        stage = "載入最高票輸入"
+        stage = "load first uDebug input"
         selected = driver.execute_script(
             """
             const link = document.querySelector('a.input_desc[data-id]');
@@ -1550,7 +1545,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
             """
         )
         if not selected:
-            raise RuntimeError("uDebug 找不到公開測資")
+            raise RuntimeError("Cannot select the requested uDebug input/output set.")
 
         WebDriverWait(driver, 12).until(
             lambda browser: bool(
@@ -1567,7 +1562,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
                 )
             )
         )
-        stage = "取得 Accepted Output"
+        stage = "request Accepted Output"
         trigger_result = driver.execute_script(
             """
             const isVisible = (el) => Boolean(el && el.getClientRects().length);
@@ -1601,7 +1596,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
                 dataInput.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));
             }
 
-            // uDebug 是 Drupal 頁面；有些題目不顯示明確 button，但 Drupal.ajax 仍掛著。
+            // Some uDebug pages use Drupal AJAX buttons instead of a normal form submit.
             if (window.Drupal?.ajax) {
                 const ajaxItems = Object.values(window.Drupal.ajax).filter(Boolean);
                 const preferredAjax = ajaxItems.find((ajax) => {
@@ -1622,7 +1617,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
                         preferredAjax.eventResponse.call(preferredAjax, preferredAjax.element, event);
                         if (outputValue()) return {ok: true, clicked: 'Drupal.ajax'};
                     } catch (error) {
-                        // 繼續嘗試一般 DOM/form submit。
+                        // Fall back to the normal DOM/form submit path below.
                     }
                 }
             }
@@ -1645,7 +1640,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
                 }
                 return {
                     ok: false,
-                    error: '找不到 uDebug 取得輸出的按鈕',
+                    error: 'Cannot find uDebug output button',
                     buttons: Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a'))
                         .filter(isVisible)
                         .slice(0, 20)
@@ -1670,7 +1665,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
         )
         if trigger_result and not trigger_result.get("ok"):
             buttons = " / ".join(trigger_result.get("buttons") or [])
-            raise RuntimeError(f"{trigger_result.get('error')}；目前頁面按鈕：{buttons[:500]}")
+            raise RuntimeError(f"{trigger_result.get('error')}; buttons={buttons[:500]}")
 
         WebDriverWait(driver, 24).until(
             lambda browser: bool(
@@ -1678,7 +1673,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
                     """
                     const text = document.body?.innerText || '';
                     if (/Access denied|Attention Required|Sorry, you have been blocked|Cloudflare Ray ID|Just a moment/i.test(text)) {
-                        throw new Error('uDebug 被 Cloudflare / 防機器人頁阻擋');
+                        throw new Error('uDebug blocked automated access');
                     }
                     const selectors = [
                         '#edit-output-data',
@@ -1713,7 +1708,7 @@ def fetch_udebug_test(problem_number: int) -> dict:
             """
         )
         if not data["input"] or not data["output"]:
-            raise RuntimeError("uDebug 回傳的輸入或正確輸出為空")
+            raise RuntimeError("uDebug returned empty input/output.")
         return {
             "status": "FETCHED",
             "source": "udebug",
@@ -1722,10 +1717,10 @@ def fetch_udebug_test(problem_number: int) -> dict:
             "expected_output": data["output"][:1_000_000],
             "title": data["title"],
             "udebug_input_id": str(selected),
-            "message": f"已載入 uDebug 最高票測資 #{selected}",
+            "message": f"已載入 uDebug 測資 #{selected}",
         }
     except TimeoutException as exc:
-        url = driver.current_url if driver else "尚未開啟頁面"
+        url = driver.current_url if driver else "not started"
         detail = ""
         if driver is not None:
             try:
@@ -1762,18 +1757,18 @@ def fetch_udebug_test(problem_number: int) -> dict:
                     """
                 )
                 detail = (
-                    f"；title={diagnostics.get('title', '')[:80]}"
-                    f"；buttons={' / '.join(diagnostics.get('buttons') or [])[:500]}"
-                    f"；textareas={' / '.join(diagnostics.get('textareas') or [])[:300]}"
-                    f"；ajax={' / '.join(diagnostics.get('ajax') or [])[:500]}"
+                    f"; title={diagnostics.get('title', '')[:80]}"
+                    f"; buttons={' / '.join(diagnostics.get('buttons') or [])[:500]}"
+                    f"; textareas={' / '.join(diagnostics.get('textareas') or [])[:300]}"
+                    f"; ajax={' / '.join(diagnostics.get('ajax') or [])[:500]}"
                 )
             except Exception:
                 detail = ""
-        raise RuntimeError(f"uDebug 逾時（階段：{stage}；頁面：{url}{detail}）") from exc
+        raise RuntimeError(f"uDebug timed out at {stage}; url={url}{detail}") from exc
     except RuntimeError:
         raise
     except Exception as exc:
-        raise RuntimeError(f"uDebug 抓取失敗（階段：{stage}）：{type(exc).__name__}: {exc}") from exc
+        raise RuntimeError(f"uDebug failed at {stage}: {type(exc).__name__}: {exc}") from exc
     finally:
         if driver is not None:
             driver.quit()
@@ -1789,9 +1784,9 @@ def fetch_test_data_task(judge: str, problem_id: str, source: str) -> dict:
             return fetch_udebug_test(validate_problem_number(problem_id))
         if source == "sample" and normalized_judge == "codeforces":
             return fetch_codeforces_sample(problem_id)
-        return {"status": "SE", "error_log": "Unsupported test source"}
+        return {"status": "SE", "error_log": "不支援的測資來源。"}
     except Exception as exc:
-        return {"status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
+        return {"status": "SE", "error_log": user_error("測資載入失敗。", exc)}
 
 
 @worker.task
@@ -1812,7 +1807,7 @@ def ask_ai_helper_task(
     if provider not in {"openai", "gemini"}:
         return {
             "status": "SE",
-            "message": "AI_PROVIDER 設定錯誤，請使用 openai 或 gemini。",
+            "message": "AI_PROVIDER 設定錯誤，必須是 openai 或 gemini。",
             "error_log": f"AI_PROVIDER={provider}",
         }
 
@@ -1821,8 +1816,8 @@ def ask_ai_helper_task(
     if not api_key:
         return {
             "status": "SE",
-            "message": f"尚未設定 {api_key_env}，無法使用 AI 助教。",
-            "error_log": f"Set {api_key_env} in .env and restart the worker.",
+            "message": f"尚未設定 {api_key_env}，AI 助手暫時無法使用。",
+            "error_log": f"請在 .env 設定 {api_key_env}，然後重啟 worker。",
         }
 
     problem_statement = ""
@@ -1834,11 +1829,11 @@ def ask_ai_helper_task(
             else:
                 problem_statement = extract_uva_problem_statement(validate_problem_number(problem_id))
         except Exception as exc:
-            action = "題目翻譯" if mode == "translate" else "AI 助教"
+            action = "題目翻譯" if mode == "translate" else "AI 助手"
             return {
                 "status": "SE",
-                "message": f"{action}無法讀取題目頁，請檢查題號、網站連線或稍後再試。",
-                "error_log": f"{type(exc).__name__}: {exc}",
+                "message": f"{action}讀取題目內容時失敗。",
+                "error_log": user_error("題目內容載入失敗。", exc),
             }
 
     prompt = build_ai_prompt(
@@ -1911,20 +1906,20 @@ def ask_ai_helper_task(
                 detail = ""
         return {
             "status": "SE",
-            "message": f"AI 助教呼叫 {provider} 失敗。請檢查 API key、模型名稱、帳戶額度、免費層限制或網路連線。",
+            "message": f"AI 助手呼叫 {provider} 失敗，請檢查 API key、模型、額度、帳單或網路。",
             "error_log": f"{exc}\n{detail}".strip(),
         }
     except requests.RequestException as exc:
         return {
             "status": "SE",
-            "message": f"AI 助教呼叫 {provider} 失敗。請檢查 worker 是否能連外。",
-            "error_log": str(exc),
+            "message": f"AI 助手無法連線到 {provider}，請檢查 worker 網路。",
+            "error_log": user_error("AI 連線失敗。", exc),
         }
 
     data = response.json()
     text = extract_openai_text(data) if provider == "openai" else extract_gemini_text(data)
     if not text:
-        return {"status": "SE", "message": "AI 助教沒有回傳文字。", "error_log": str(data)[:4000]}
+        return {"status": "SE", "message": "AI 助手回傳空白內容。", "error_log": str(data)[:4000]}
 
     return {
         "status": "AI",
@@ -2200,11 +2195,11 @@ def submit_codeforces_task(problem_id: str, language: str, code: str) -> dict:
     username = os.getenv("CODEFORCES_USERNAME", "")
     password = os.getenv("CODEFORCES_PASSWORD", "")
     if not username or not password:
-        return {"status": "SE", "error_log": "Set CODEFORCES_USERNAME and CODEFORCES_PASSWORD in .env"}
+        return {"status": "SE", "error_log": "請在 .env 設定 CODEFORCES_USERNAME 和 CODEFORCES_PASSWORD。"}
     try:
         return CodeforcesClient(username, password).submit(problem_id, language, code)
     except Exception as exc:
-        return {"status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
+        return {"status": "SE", "error_log": user_error("Codeforces 提交失敗。", exc)}
 
 
 @worker.task
@@ -2217,9 +2212,9 @@ def submit_uva_task(problem_id: str, language: str, code: str) -> dict:
     username = os.getenv("UVA_USERNAME", "")
     password = os.getenv("UVA_PASSWORD", "")
     if not username or not password:
-        return {"status": "SE", "error_log": "尚未在 .env 設定 UVA_USERNAME 與 UVA_PASSWORD"}
+        return {"status": "SE", "error_log": "請在 .env 設定 UVA_USERNAME 和 UVA_PASSWORD。"}
     try:
         return UvaClient(username, password).submit(problem_id, language, code)
     except Exception as exc:
-        return {"status": "SE", "error_log": f"{type(exc).__name__}: {exc}"}
+        return {"status": "SE", "error_log": user_error("UVA 提交失敗。", exc)}
 

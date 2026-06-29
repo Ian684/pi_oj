@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import requests
@@ -40,22 +41,22 @@ def normalize_uva_problem_id(value: str) -> str:
     except (TypeError, ValueError) as exc:
         raise ValueError("UVA 題號格式錯誤") from exc
     if not (100 <= number <= 1800 or 10_000 <= number <= 13_400):
-        raise ValueError("UVA 題號必須介於 100–1800 或 10000–13400")
+        raise ValueError("UVA 題號必須介於 100-1800 或 10000-13400")
     return str(number)
 
 
 def normalize_judge(value: str) -> str:
     lowered = (value or "uva").strip().lower()
     if lowered not in {"uva", "codeforces"}:
-        raise ValueError("judge must be uva or codeforces")
+        raise ValueError("平台必須是 UVA 或 Codeforces")
     return lowered
 
 
 def normalize_codeforces_problem_id(value: str) -> str:
     text = (value or "").strip().upper().replace("-", "/")
-    match = __import__("re").fullmatch(r"(\d{1,6})\s*/?\s*([A-Z][0-9A-Z]?)", text)
+    match = re.fullmatch(r"(\d{1,6})\s*/?\s*([A-Z][0-9A-Z]?)", text)
     if not match:
-        raise ValueError("Codeforces problem id must look like 1843A or 1843/A")
+        raise ValueError("Codeforces 題號格式應類似 1843A 或 1843/A")
     return f"{match.group(1)}{match.group(2)}"
 
 
@@ -90,7 +91,7 @@ class AiHelpRequest(BaseModel):
     @classmethod
     def validate_mode(cls, value: str) -> str:
         if value not in {"hint", "debug", "translate", "tests", "expected", "ask"}:
-            raise ValueError("mode must be hint, debug, translate, tests, expected, or ask")
+            raise ValueError("AI 模式格式錯誤")
         return value
 
     @field_validator("judge")
@@ -138,7 +139,7 @@ class TestFetchRequest(BaseModel):
     @classmethod
     def validate_source(cls, value: str) -> str:
         if value not in {"sample", "udebug"}:
-            raise ValueError("source currently supports sample or udebug")
+            raise ValueError("測資來源目前只支援題目範例或 uDebug")
         return value
 
     def model_post_init(self, __context) -> None:
@@ -157,11 +158,11 @@ SUPPORTED_LANGUAGES = {
 
 def validate_language(language: str) -> None:
     if language not in SUPPORTED_LANGUAGES:
-        raise HTTPException(status_code=422, detail="unsupported language")
+        raise HTTPException(status_code=422, detail="不支援的程式語言")
 
 @app.get("/")
 def index() -> RedirectResponse:
-    # 保留相對資源路徑，讓直接開啟 index.html 與伺服器模式都能正確載入樣式。
+    # Keep the redirect explicit so static assets load through the server path.
     return RedirectResponse(url="/static/index.html")
 
 

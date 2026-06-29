@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const STORAGE_KEY = "pi-oj-cpe-exam";
 const HISTORY_KEY = "pi-oj-cpe-exam-history";
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const DURATION_MS = 3 * 60 * 60 * 1000;
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
@@ -23,6 +23,9 @@ let vimMode = null;
 let monacoLoaderSource = "local";
 let activeIndex = 0;
 let toastTimer = null;
+let toastQueue = [];
+let toastShowing = false;
+const busyActions = new Set();
 let activePopover = null;
 let state = loadState();
 
@@ -230,11 +233,42 @@ function newExamId() {
   return `exam-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function toast(message) {
-  $("toast").textContent = message;
-  $("toast").classList.add("show");
+function showNextToast() {
+  const message = toastQueue.shift();
+  const target = $("toast");
+  if (!message || !target) {
+    toastShowing = false;
+    return;
+  }
+  toastShowing = true;
+  target.textContent = message;
+  target.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $("toast").classList.remove("show"), 2600);
+  toastTimer = setTimeout(() => {
+    target.classList.remove("show");
+    toastTimer = setTimeout(showNextToast, 180);
+  }, 2600);
+}
+
+function toast(message) {
+  const text = String(message || "").trim();
+  if (!text) return;
+  toastQueue.push(text);
+  if (toastQueue.length > 4) toastQueue = toastQueue.slice(-4);
+  if (!toastShowing) showNextToast();
+}
+
+function beginAction(key, message = "上一個操作還在進行中。") {
+  if (busyActions.has(key)) {
+    toast(message);
+    return false;
+  }
+  busyActions.add(key);
+  return true;
+}
+
+function endAction(key) {
+  busyActions.delete(key);
 }
 
 function el(tag, className, text) {
@@ -269,7 +303,7 @@ function ensurePdfUi() {
         <a id="openSidePdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
         <button id="expandPdf" type="button">放大閱讀</button>
       </div>
-      <iframe id="sideProblemPdf" title="題目 PDF"></iframe>
+      <iframe id="sideProblemPdf" title="題目 PDF" sandbox="allow-same-origin"></iframe>
     `;
     $("aiPanel").after(panel);
   }
@@ -361,10 +395,16 @@ function updateTestSourceUi() {
 function sanitizeAiHtml(html) {
   const template = document.createElement("template");
   template.innerHTML = html;
-  const allowedTags = new Set(["P", "BR", "STRONG", "EM", "CODE", "PRE", "UL", "OL", "LI", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "HR", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD", "A"]);
+  const allowedTags = new Set([
+    "A", "BLOCKQUOTE", "BR", "CODE", "DEL", "EM", "H1", "H2", "H3", "H4",
+    "H5", "H6", "HR", "LI", "OL", "P", "PRE", "STRONG", "TABLE", "TBODY",
+    "TD", "TH", "THEAD", "TR", "UL",
+  ]);
   const allowedLinkProtocols = new Set(["http:", "https:", "mailto:"]);
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
   const remove = [];
-  for (const node of template.content.querySelectorAll("*")) {
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
     if (!allowedTags.has(node.tagName)) {
       remove.push(node);
       continue;
@@ -395,8 +435,44 @@ function sanitizeAiHtml(html) {
       }
     }
   }
-  for (const node of remove) node.replaceWith(document.createTextNode(node.textContent || ""));
+  for (const node of remove) {
+    node.replaceWith(document.createTextNode(node.textContent || ""));
+  }
   return template.innerHTML;
+}
+
+function renderAiMath(target) {
+  if (typeof renderMathInElement !== "function") {
+    console.warn("KaTeX auto-render is not loaded; AI math will remain as plain text.");
+    return;
+  }
+  renderMathInElement(target, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "\\[", right: "\\]", display: true},
+      {left: "$", right: "$", display: false},
+      {left: "\\(", right: "\\)", display: false},
+    ],
+    ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+    throwOnError: false,
+  });
+}
+
+function renderAiError(target, message) {
+  const empty = document.createElement("div");
+  empty.className = "ai-empty";
+  empty.textContent = "AI 助教呼叫失敗。請檢查 API key、模型名稱、帳戶額度或網路連線。";
+  target.appendChild(empty);
+
+  if (!message) return;
+  const details = document.createElement("details");
+  details.className = "ai-error-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "詳細資訊";
+  const pre = document.createElement("pre");
+  pre.textContent = message;
+  details.append(summary, pre);
+  target.appendChild(details);
 }
 
 function renderAiReadable(message, isError = false) {
@@ -413,7 +489,11 @@ function renderAiReadable(message, isError = false) {
     target.appendChild(empty);
     return;
   }
-  if (isError || !window.marked) {
+  if (isError) {
+    renderAiError(target, text);
+    return;
+  }
+  if (!window.marked) {
     const pre = document.createElement("pre");
     pre.textContent = text;
     target.appendChild(pre);
@@ -425,6 +505,7 @@ function renderAiReadable(message, isError = false) {
     gfm: true,
   });
   target.innerHTML = sanitizeAiHtml(html);
+  renderAiMath(target);
 }
 
 function setAiOutput(message, isError = false) {
@@ -1007,11 +1088,25 @@ function render() {
   }
 }
 
+function friendlyApiError(status, detail) {
+  const text = typeof detail === "string" ? detail : JSON.stringify(detail || "");
+  if (/insufficient_quota|quota|billing/i.test(text)) return `AI 額度不足或帳戶尚未開通付款。\n\n${text}`;
+  if (status === 429) return `請求太頻繁或 API 額度暫時不足，請稍後再試。\n\n${text}`;
+  if (status === 401 || status === 403) return `權限或登入驗證失敗，請檢查 API key、ngrok policy 或帳號設定。\n\n${text}`;
+  if (status >= 500) return `後端服務暫時失敗，請稍後重試或查看 worker/web logs。\n\n${text}`;
+  return text || `HTTP ${status}`;
+}
+
 async function request(url, options = {}) {
-  const response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
+  let response;
+  try {
+    response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
+  } catch (error) {
+    throw new Error(`無法連線到後端服務，請確認 web 容器或 ngrok 是否正常。\n\n${error.message}`);
+  }
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : {detail: await response.text()};
-  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(friendlyApiError(response.status, data.detail || data));
   return data;
 }
 
@@ -1044,9 +1139,18 @@ function showResult(result) {
 }
 
 async function execute(kind) {
+  const actionKey = kind === "run" ? "run" : "submit";
+  if (!beginAction(actionKey, kind === "run" ? "程式正在執行中。" : "提交正在進行中。")) return;
   const problem = currentProblem();
-  if (kind !== "run" && problem && !confirm(`確定要提交目前程式碼到 UVA ${problem.id}？`)) return;
-  if (!problem) return toast("請先選題。");
+  if (kind !== "run" && problem && !confirm(`確定要提交目前程式碼到 UVA ${problem.id}？`)) {
+    endAction(actionKey);
+    return;
+  }
+  if (!problem) {
+    toast("請先選題。");
+    endAction(actionKey);
+    return;
+  }
   saveCurrentBuffers();
   const button = kind === "run" ? $("runCode") : $("submitUva");
   button.disabled = true;
@@ -1069,6 +1173,7 @@ async function execute(kind) {
     toast(error.message);
   } finally {
     button.disabled = false;
+    endAction(actionKey);
   }
 }
 
@@ -1085,12 +1190,29 @@ function parseAiExpectedOutput(message) {
 }
 
 async function loadTests() {
+  if (!beginAction("tests", "測資正在載入中。")) return;
   const problem = currentProblem();
-  if (!problem) return toast("請先選題。");
+  if (!problem) {
+    toast("請先選題。");
+    endAction("tests");
+    return;
+  }
   const source = $("testSource").value;
-  if (source === "custom") return toast("自訂測資請直接編輯輸入與輸出。");
-  if (source === "udebug" && !state.permissions.udebug) return toast("目前模式禁用 uDebug。");
-  if (source === "ai" && !state.permissions.aiTests) return toast("目前模式禁用 AI 測資。");
+  if (source === "custom") {
+    toast("自訂測資請直接編輯輸入與輸出。");
+    endAction("tests");
+    return;
+  }
+  if (source === "udebug" && !state.permissions.udebug) {
+    toast("目前模式禁用 uDebug。");
+    endAction("tests");
+    return;
+  }
+  if (source === "ai" && !state.permissions.aiTests) {
+    toast("目前模式禁用 AI 測資。");
+    endAction("tests");
+    return;
+  }
   $("loadTests").disabled = true;
   try {
     if (source === "ai") {
@@ -1113,14 +1235,28 @@ async function loadTests() {
     toast(error.message);
   } finally {
     $("loadTests").disabled = false;
+    endAction("tests");
   }
 }
 
 async function aiExpectedOutput() {
+  if (!beginAction("ai-tests", "AI 測資正在處理中。")) return;
   const problem = currentProblem();
-  if (!problem) return toast("請先選題。");
-  if (!state.permissions.aiTests) return toast("目前模式禁用 AI 測資。");
-  if (!$("input").value.trim()) return toast("請先輸入測試輸入。");
+  if (!problem) {
+    toast("請先選題。");
+    endAction("ai-tests");
+    return;
+  }
+  if (!state.permissions.aiTests) {
+    toast("目前模式禁用 AI 測資。");
+    endAction("ai-tests");
+    return;
+  }
+  if (!$("input").value.trim()) {
+    toast("請先輸入測試輸入。");
+    endAction("ai-tests");
+    return;
+  }
   $("aiExpected").disabled = true;
   try {
     const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({mode: "expected", judge: "uva", problem_id: problem.id, language: state.language, code: getCode(), input_data: $("input").value, question: "Compute the exact expected stdout for this stdin."})});
@@ -1134,14 +1270,28 @@ async function aiExpectedOutput() {
   } finally {
     $("aiExpected").disabled = false;
     updateToolPermissions();
+    endAction("ai-tests");
   }
 }
 
 async function askAi(mode) {
+  if (!beginAction("ai", "AI 助教正在回覆中。")) return;
   const problem = currentProblem();
-  if (!problem) return toast("請先選題。");
-  if (!state.permissions.aiHelper) return toast("目前模式禁用 AI 助手。");
-  if (mode === "ask" && !$("aiQuestion").value.trim()) return toast("請先輸入要問 AI 的內容。");
+  if (!problem) {
+    toast("請先選題。");
+    endAction("ai");
+    return;
+  }
+  if (!state.permissions.aiHelper) {
+    toast("目前模式禁用 AI 助手。");
+    endAction("ai");
+    return;
+  }
+  if (mode === "ask" && !$("aiQuestion").value.trim()) {
+    toast("請先輸入要問 AI 的內容。");
+    endAction("ai");
+    return;
+  }
   const button = {ask: $("aiAsk"), hint: $("aiHint"), debug: $("aiDebug"), translate: $("aiTranslate")}[mode];
   button.disabled = true;
   setAiOutput("AI 正在回覆...");
@@ -1157,6 +1307,7 @@ async function askAi(mode) {
   } finally {
     button.disabled = false;
     updateToolPermissions();
+    endAction("ai");
   }
 }
 
@@ -1231,61 +1382,84 @@ function normalizeImportedHistory(data) {
 }
 
 function normalizeImportedCurrent(data) {
-  if (data?.current?.problems) return {...defaultState(), ...data.current};
-  if (data?.type === "pi-oj-cpe-exam-backup" && data?.current) return {...defaultState(), ...data.current};
-  if (data?.problems && !data?.archivedAt) return {...defaultState(), ...data};
-  return null;
+  const raw = data?.type === "pi-oj-cpe-exam-backup" ? data.current : (data?.current || data);
+  if (!raw || !Array.isArray(raw.problems)) return null;
+  const defaults = defaultState();
+  const normalized = {
+    ...defaults,
+    ...raw,
+    stateVersion: STATE_VERSION,
+    mode: ["strict", "standard", "practice", "custom"].includes(raw.mode) ? raw.mode : defaults.mode,
+    compilerMode: ["exam", "oj", "simple"].includes(raw.compilerMode) ? raw.compilerMode : defaults.compilerMode,
+    problems: raw.problems.filter((problem) => problem && typeof problem === "object" && problem.id),
+    codeByProblem: raw.codeByProblem && typeof raw.codeByProblem === "object" && !Array.isArray(raw.codeByProblem) ? raw.codeByProblem : {},
+    inputByProblem: raw.inputByProblem && typeof raw.inputByProblem === "object" && !Array.isArray(raw.inputByProblem) ? raw.inputByProblem : {},
+    expectedByProblem: raw.expectedByProblem && typeof raw.expectedByProblem === "object" && !Array.isArray(raw.expectedByProblem) ? raw.expectedByProblem : {},
+    aiByProblem: raw.aiByProblem && typeof raw.aiByProblem === "object" && !Array.isArray(raw.aiByProblem) ? raw.aiByProblem : {},
+    records: raw.records && typeof raw.records === "object" && !Array.isArray(raw.records) ? raw.records : {},
+    submitCounts: raw.submitCounts && typeof raw.submitCounts === "object" && !Array.isArray(raw.submitCounts) ? raw.submitCounts : {},
+    permissions: {...defaults.permissions, ...(raw.permissions && typeof raw.permissions === "object" ? raw.permissions : {})},
+    languageByCompilerMode: {...defaults.languageByCompilerMode, ...(raw.languageByCompilerMode && typeof raw.languageByCompilerMode === "object" ? raw.languageByCompilerMode : {})},
+    pausedTotalMs: Number(raw.pausedTotalMs || 0),
+  };
+  normalized.activeIndex = Math.min(Math.max(Number(raw.activeIndex || 0), 0), Math.max(normalized.problems.length - 1, 0));
+  return normalized;
 }
 
 async function importRecordFile(file) {
   if (!file) return;
   try {
-    {
+    if (file.size > 5 * 1024 * 1024) throw new Error("匯入檔案太大，請確認是 Pi OJ 匯出的 JSON。");
     const data = JSON.parse(await file.text());
+    if (!data || (typeof data !== "object" && !Array.isArray(data))) {
+      throw new Error("匯入檔案必須是 JSON object 或 array。");
+    }
     const importedHistory = normalizeImportedHistory(data);
     const importedCurrent = normalizeImportedCurrent(data);
-    if (!importedHistory.length && !importedCurrent) throw new Error("這不是可匯入的 CPE 考試備份或歷史紀錄。");
+    if (importedHistory.length > 200) throw new Error("匯入紀錄超過 200 筆，請分批匯入。");
+    if (!importedHistory.length && !importedCurrent) throw new Error("這不是可匯入的 CPE 考試紀錄。");
+
     const byId = new Map(loadHistory().map((entry) => [entry.examId, entry]));
+    let added = 0;
+    let overwritten = 0;
+    let skipped = 0;
     for (const entry of importedHistory) {
-      const normalized = {examId: entry.examId || entry.state?.examId || newExamId(), archivedAt: entry.archivedAt || Date.now(), summary: entry.summary || summarizeState(entry.state || {}), state: entry.state || entry};
+      const stateData = normalizeImportedCurrent(entry.state || entry);
+      if (!stateData) {
+        skipped += 1;
+        continue;
+      }
+      const normalized = {
+        examId: entry.examId || stateData.examId || newExamId(),
+        archivedAt: Number(entry.archivedAt || Date.now()),
+        summary: entry.summary || summarizeState(stateData),
+        state: stateData,
+      };
+      if (byId.has(normalized.examId)) overwritten += 1;
+      else added += 1;
       byId.set(normalized.examId, normalized);
     }
     saveHistory([...byId.values()].sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0)).slice(0, 100));
+
     if (importedCurrent) {
       const hasActiveExam = Boolean(state.startedAt && !state.endedAt);
       const shouldRestore = confirm(hasActiveExam
-        ? "備份裡包含目前考試狀態。要覆蓋現在進行中的考試並恢復備份嗎？"
-        : "備份裡包含目前考試狀態。要恢復成目前考試嗎？");
+        ? "目前有進行中的考試。要匯入檔案中的目前考試並覆蓋它嗎？"
+        : "要匯入檔案中的目前考試嗎？");
       if (shouldRestore) {
-        state = {
-          ...defaultState(),
-          ...importedCurrent,
-          permissions: {...defaultState().permissions, ...(importedCurrent.permissions || {})},
-          pausedTotalMs: Number(importedCurrent.pausedTotalMs || 0),
-        };
+        state = importedCurrent;
         activeIndex = Math.min(Math.max(Number(state.activeIndex || 0), 0), Math.max((state.problems || []).length - 1, 0));
         saveState();
         render();
-        toast("已恢復備份中的目前考試。");
+        toast("已匯入目前考試。");
         return;
       }
     }
+
     renderHistory();
-    toast(`已匯入 ${importedHistory.length} 筆歷史紀錄。`);
-    return;
-    }
-    const imported = normalizeImportedHistory(JSON.parse(await file.text()));
-    if (!imported.length) throw new Error("這不是可匯入的 CPE 考試紀錄。");
-    const byId = new Map(loadHistory().map((entry) => [entry.examId, entry]));
-    for (const entry of imported) {
-      const normalized = {examId: entry.examId || entry.state?.examId || newExamId(), archivedAt: entry.archivedAt || Date.now(), summary: entry.summary || summarizeState(entry.state || {}), state: entry.state || entry};
-      byId.set(normalized.examId, normalized);
-    }
-    saveHistory([...byId.values()].sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0)).slice(0, 100));
-    renderHistory();
-    toast(`已匯入 ${imported.length} 筆紀錄。`);
+    toast(`已匯入 ${added} 筆、覆蓋 ${overwritten} 筆、略過 ${skipped} 筆。`);
   } catch (error) {
-    toast(error.message);
+    toast(error.message || "匯入失敗。");
   } finally {
     $("importFile").value = "";
   }
@@ -1305,6 +1479,21 @@ function loadScript(src) {
 async function resourceExists(url) {
   try { return (await fetch(url, {method: "HEAD", cache: "no-store"})).ok; }
   catch { return false; }
+}
+
+async function checkEditorAssets() {
+  const assets = [
+    "/static/vendor/monaco/vs/loader.js",
+    "/static/vendor/monaco/vs/editor/editor.main.js",
+    "/static/vendor/monaco-vim.js",
+  ];
+  const results = await Promise.all(assets.map(async (url) => [url, await resourceExists(url)]));
+  const missing = results.filter(([, ok]) => !ok).map(([url]) => url);
+  if (missing.length) {
+    console.warn("Editor assets missing", missing);
+    toast(`編輯器資源缺少 ${missing.length} 個，必要時會改用簡易編譯器。`);
+  }
+  return missing.length === 0;
 }
 
 async function ensureMonacoLoader() {
@@ -1347,6 +1536,7 @@ function defineExamTheme() {
 }
 
 async function initializeEditor() {
+  await checkEditorAssets();
   if (state.compilerMode === "simple") {
     switchToSimpleCompiler("", {silent: true});
     return;
@@ -1550,3 +1740,4 @@ if (!state.problems.length) drawProblems();
 render();
 initializeEditor();
 setInterval(updateTimer, 1000);
+

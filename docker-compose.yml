@@ -86,6 +86,9 @@ services:
       OJ_STDERR_CAPTURE_LIMIT: ${OJ_STDERR_CAPTURE_LIMIT:-40000}
       OJ_JAVA_MEM_LIMIT: ${OJ_JAVA_MEM_LIMIT:-384m}
       OJ_GO_MEM_LIMIT: ${OJ_GO_MEM_LIMIT:-256m}
+      OJ_RUN_TIMEOUT: ${OJ_RUN_TIMEOUT:-5}
+      OJ_JAVA_RUN_TIMEOUT: ${OJ_JAVA_RUN_TIMEOUT:-8}
+      OJ_GO_RUN_TIMEOUT: ${OJ_GO_RUN_TIMEOUT:-8}
     volumes:
       - ./backend/tasks.py:/app/tasks.py
       - /var/run/docker.sock:/var/run/docker.sock

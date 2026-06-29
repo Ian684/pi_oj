@@ -8,6 +8,10 @@ let lastSubmittedExpectedOutput = "";
 let lastRunResult = null;
 let monacoLoaderSource = "local";
 const loadedMonacoContributions = new Set();
+let toastTimer = null;
+let toastQueue = [];
+let toastShowing = false;
+const busyActions = new Set();
 
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
@@ -362,19 +366,6 @@ const languageOptionsByJudge = {
 const examLanguageOptions = [["exam_c_mingw", "C (MinGW GCC 6.3.0)"], ["exam_cpp_mingw", "C++ (MinGW GCC 6.3.0)"], ["exam_java8", "Java (AdoptOpenJDK 8)"], ["exam_java11", "Java (AdoptOpenJDK 11)"], ["exam_py396", "Python (Python 3.9.6)"]];
 const cpeLevelShortLabels = {must:"必考", star1:"★", star2:"★★", star3:"★★★", star4:"★★★★", star5:"★★★★★"};
 const monacoLanguageModes = {uva_c:"c", uva_java:"java", uva_pascal:"pascal", uva_cpp11:"cpp", uva_py3:"python", cf_c11:"c", cf_cpp17:"cpp", cf_cpp20:"cpp", cf_cpp23:"cpp", cf_java21:"java", cf_py313:"python", cf_pypy310:"python", cf_js_v8:"javascript", cf_node:"javascript", cf_rust2021:"rust", cf_rust2024:"rust", cf_go:"go", cf_perl:"perl", cf_php:"php", cf_ruby:"ruby", cf_ocaml:"ocaml", cf_d:"d", exam_c_mingw:"c", exam_cpp_mingw:"cpp", exam_java8:"java", exam_java11:"java", exam_py396:"python"};
-const monacoLanguageContributions = {
-  c: "vs/basic-languages/cpp/cpp.contribution",
-  cpp: "vs/basic-languages/cpp/cpp.contribution",
-  java: "vs/basic-languages/java/java.contribution",
-  pascal: "vs/basic-languages/pascal/pascal.contribution",
-  python: "vs/basic-languages/python/python.contribution",
-  javascript: "vs/basic-languages/javascript/javascript.contribution",
-  rust: "vs/basic-languages/rust/rust.contribution",
-  go: "vs/basic-languages/go/go.contribution",
-  perl: "vs/basic-languages/perl/perl.contribution",
-  php: "vs/basic-languages/php/php.contribution",
-  ruby: "vs/basic-languages/ruby/ruby.contribution",
-};
 const languageAliases = {cpp:"uva_cpp11", cpp17:"cf_cpp17", cpp20:"cf_cpp20", c:"cf_c11", py:"cf_py313", java:"cf_java21", js:"cf_node"};
 function getCompilerMode(judge = getJudge()) { return judge === "codeforces" ? "oj" : ($("compilerMode")?.value || "oj"); }
 function languageOptionsFor(judge = getJudge(), compilerMode = getCompilerMode(judge)) {
@@ -407,19 +398,8 @@ function renderLanguageOptions(judge = getJudge()) {
 function currentLanguageMode() { return monacoLanguageModes[$("language").value] || "plaintext"; }
 
 function loadMonacoContribution(mode) {
-  const modulePath = monacoLanguageContributions[mode];
-  if (!modulePath || loadedMonacoContributions.has(modulePath) || typeof window.require !== "function") {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    window.require([modulePath], () => {
-      loadedMonacoContributions.add(modulePath);
-      resolve();
-    }, (error) => {
-      console.warn("Monaco language contribution failed", modulePath, error);
-      resolve();
-    });
-  });
+  loadedMonacoContributions.add(mode);
+  return Promise.resolve();
 }
 
 const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
@@ -488,6 +468,7 @@ function applyCpeStarProblem(problemId) {
   $("problemId").value = problemId;
   localStorage.setItem("pi-oj-problem-id-cpe", problemId);
   localStorage.setItem("pi-oj-problem-id-uva", problemId);
+  updateProblemValidation();
 }
 
 
@@ -519,6 +500,12 @@ function codeforcesSubmitUrl(problemId) {
   return `https://codeforces.com/problemset/submit${problemCode ? `?submittedProblemCode=${encodeURIComponent(problemCode)}` : ""}`;
 }
 
+function updateProblemValidation() {
+  const input = $("problemId");
+  if (!input) return;
+  const hasValue = Boolean(input.value.trim());
+  input.classList.toggle("invalid", hasValue && !validProblemId(input.value));
+}
 function validProblemId(value) {
   const judge = effectiveJudge();
   if (judge === "codeforces") return /^(\d{1,6})\s*\/?\s*([A-Za-z][0-9A-Za-z]?)$/.test(value.trim());
@@ -553,6 +540,7 @@ function updateJudgeUi() {
     $("uva").textContent = "\u2191 " + "\u63d0\u4ea4" + " UVA";
   }
   syncTestSourceOptions();
+  updateProblemValidation();
 }
 
 
@@ -603,6 +591,7 @@ async function activateMonacoCompiler() {
     await initializeMonaco();
     return;
   }
+  await checkEditorAssets();
   setCode($("code").value);
   await loadMonacoContribution(currentLanguageMode());
   monaco.editor.setModelLanguage(codeEditor.getModel(), currentLanguageMode());
@@ -643,13 +632,18 @@ function invalidProblemMessage() {
 
 
 async function fetchSelectedTests() {
+  if (!beginAction("tests", "測資正在載入中。")) return;
   const problemId = $("problemId").value;
   const source = activeTestSource;
   if (!validProblemId(problemId)) {
     toast(invalidProblemMessage());
+    endAction("tests");
     return;
   }
-  if (!["sample", "udebug", "ai", "custom"].includes(source)) return;
+  if (!["sample", "udebug", "ai", "custom"].includes(source)) {
+    endAction("tests");
+    return;
+  }
 
   const button = $("fetchTests");
   const originalText = button.textContent;
@@ -722,6 +716,7 @@ async function fetchSelectedTests() {
   } finally {
     button.disabled = false;
     button.textContent = originalText;
+    endAction("tests");
   }
 }
 
@@ -791,10 +786,42 @@ function togglePdfExpand() {
   $("expandPdf").textContent = expanded ? "回到右側" : "放大閱讀";
 }
 
+function showNextToast() {
+  const message = toastQueue.shift();
+  const target = $("toast");
+  if (!message || !target) {
+    toastShowing = false;
+    return;
+  }
+  toastShowing = true;
+  target.textContent = message;
+  target.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    target.classList.remove("show");
+    toastTimer = setTimeout(showNextToast, 180);
+  }, 3200);
+}
+
 function toast(message) {
-  $("toast").textContent = message;
-  $("toast").classList.add("show");
-  setTimeout(() => $("toast").classList.remove("show"), 3200);
+  const text = String(message || "").trim();
+  if (!text) return;
+  toastQueue.push(text);
+  if (toastQueue.length > 4) toastQueue = toastQueue.slice(-4);
+  if (!toastShowing) showNextToast();
+}
+
+function beginAction(key, message = "上一個操作還在進行中。") {
+  if (busyActions.has(key)) {
+    toast(message);
+    return false;
+  }
+  busyActions.add(key);
+  return true;
+}
+
+function endAction(key) {
+  busyActions.delete(key);
 }
 
 function loadScript(src) {
@@ -815,6 +842,21 @@ async function resourceExists(url) {
   } catch {
     return false;
   }
+}
+
+async function checkEditorAssets() {
+  const assets = [
+    "/static/vendor/monaco/vs/loader.js",
+    "/static/vendor/monaco/vs/editor/editor.main.js",
+    "/static/vendor/monaco-vim.js",
+  ];
+  const results = await Promise.all(assets.map(async (url) => [url, await resourceExists(url)]));
+  const missing = results.filter(([, ok]) => !ok).map(([url]) => url);
+  if (missing.length) {
+    console.warn("Editor assets missing", missing);
+    toast(`編輯器資源缺少 ${missing.length} 個，必要時會改用簡易編譯器。`);
+  }
+  return missing.length === 0;
 }
 
 async function ensureMonacoLoader() {
@@ -839,6 +881,7 @@ async function ensureMonacoLoader() {
 }
 
 async function initializeMonaco() {
+  await checkEditorAssets();
   if (getCompilerMode() === "simple") {
     activateSimpleCompiler(null, false);
     return;
@@ -1027,10 +1070,25 @@ function setVerdict(status, pending = false) {
   el.className = `pill ${pending ? "neutral" : ["AC", "OK", "SUBMITTED", "AI"].includes(status) ? "ok" : "bad"}`;
 }
 
+function friendlyApiError(status, detail) {
+  const text = typeof detail === "string" ? detail : JSON.stringify(detail || "");
+  if (/insufficient_quota|quota|billing/i.test(text)) return `AI 額度不足或帳戶尚未開通付款。\n\n${text}`;
+  if (status === 429) return `請求太頻繁或 API 額度暫時不足，請稍後再試。\n\n${text}`;
+  if (status === 401 || status === 403) return `權限或登入驗證失敗，請檢查 API key、ngrok policy 或帳號設定。\n\n${text}`;
+  if (status >= 500) return `後端服務暫時失敗，請稍後重試或查看 worker/web logs。\n\n${text}`;
+  return text || `HTTP ${status}`;
+}
+
 async function request(url, options = {}) {
-  const response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  let response;
+  try {
+    response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
+  } catch (error) {
+    throw new Error(`無法連線到後端服務，請確認 web 容器或 ngrok 是否正常。\n\n${error.message}`);
+  }
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : {detail: await response.text()};
+  if (!response.ok) throw new Error(friendlyApiError(response.status, data.detail || data));
   return data;
 }
 
@@ -1087,7 +1145,7 @@ function sanitizeAiHtml(html) {
     "H5", "H6", "HR", "LI", "OL", "P", "PRE", "STRONG", "TABLE", "TBODY",
     "TD", "TH", "THEAD", "TR", "UL",
   ]);
-  const allowedAttrs = new Set(["class", "href", "rel", "target"]);
+  const allowedLinkProtocols = new Set(["http:", "https:", "mailto:"]);
   const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
   const remove = [];
   while (walker.nextNode()) {
@@ -1097,17 +1155,29 @@ function sanitizeAiHtml(html) {
       continue;
     }
     for (const attr of [...node.attributes]) {
-      if (!allowedAttrs.has(attr.name)) {
-        node.removeAttribute(attr.name);
-        continue;
-      }
-      if (attr.name === "href" && !/^(https?:|mailto:|#)/i.test(attr.value)) {
-        node.removeAttribute(attr.name);
-      }
+      if (node.tagName === "A" && attr.name === "href") continue;
+      node.removeAttribute(attr.name);
     }
     if (node.tagName === "A") {
-      node.target = "_blank";
-      node.rel = "noopener noreferrer";
+      const href = node.getAttribute("href") || "";
+      const trimmedHref = href.trim();
+      let safeHref = false;
+      if (trimmedHref.startsWith("#")) {
+        safeHref = true;
+      } else {
+        try {
+          const parsed = new URL(trimmedHref, window.location.origin);
+          safeHref = allowedLinkProtocols.has(parsed.protocol);
+        } catch {
+          safeHref = false;
+        }
+      }
+      if (!safeHref) {
+        node.removeAttribute("href");
+      } else if (!trimmedHref.startsWith("#")) {
+        node.target = "_blank";
+        node.rel = "noopener noreferrer";
+      }
     }
   }
   for (const node of remove) {
@@ -1117,7 +1187,10 @@ function sanitizeAiHtml(html) {
 }
 
 function renderAiMath(target) {
-  if (typeof renderMathInElement !== "function") return;
+  if (typeof renderMathInElement !== "function") {
+    console.warn("KaTeX auto-render is not loaded; AI math will remain as plain text.");
+    return;
+  }
   renderMathInElement(target, {
     delimiters: [
       {left: "$$", right: "$$", display: true},
@@ -1130,28 +1203,48 @@ function renderAiMath(target) {
   });
 }
 
+function renderAiError(target, message) {
+  const empty = document.createElement("div");
+  empty.className = "ai-empty";
+  empty.textContent = "AI 助教呼叫失敗。請檢查 API key、模型名稱、帳戶額度或網路連線。";
+  target.appendChild(empty);
+
+  if (!message) return;
+  const details = document.createElement("details");
+  details.className = "ai-error-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "詳細資訊";
+  const pre = document.createElement("pre");
+  pre.textContent = message;
+  details.append(summary, pre);
+  target.appendChild(details);
+}
+
 function renderAiReadable(message, isError = false) {
   const target = $("aiOutput");
+  const text = message || "";
+  target.dataset.raw = text;
   target.textContent = "";
   target.classList.toggle("ai-error", isError);
   target.classList.toggle("ai-readable", !isError);
-
-  if (!message) {
+  if (!text) {
     const empty = document.createElement("div");
     empty.className = "ai-empty";
-    empty.textContent = "AI \u56de\u7b54\u6703\u986f\u793a\u5728\u9019\u88e1\u3002";
+    empty.textContent = "AI 回答會顯示在這裡。";
     target.appendChild(empty);
     return;
   }
-
-  if (isError || !window.marked) {
+  if (isError) {
+    renderAiError(target, text);
+    return;
+  }
+  if (!window.marked) {
     const pre = document.createElement("pre");
-    pre.textContent = message;
+    pre.textContent = text;
     target.appendChild(pre);
     return;
   }
-
-  const html = marked.parse(String(message).replaceAll("\r\n", "\n").replaceAll("\r", "\n"), {
+  const html = marked.parse(String(text).replaceAll("\r\n", "\n").replaceAll("\r", "\n"), {
     async: false,
     breaks: true,
     gfm: true,
@@ -1232,13 +1325,16 @@ function showAiResult(result) {
 }
 
 async function askAi(mode) {
+  if (!beginAction("ai", "AI 助教正在回覆中。")) return;
   if (mode !== "ask" && !validProblemId($("problemId").value)) {
     toast(invalidProblemMessage() + "\uff0cAI \u52a9\u6559\u9700\u8981\u77e5\u9053\u662f\u54ea\u4e00\u984c");
+    endAction("ai");
     return;
   }
   if (mode === "ask" && !$("aiQuestion").value.trim()) {
     toast("\u8acb\u5148\u8f38\u5165\u60f3\u554f AI \u7684\u5167\u5bb9");
     $("aiQuestion").focus();
+    endAction("ai");
     return;
   }
   const buttons = {ask: $("aiAsk"), hint: $("aiHint"), debug: $("aiDebug"), translate: $("aiTranslate")};
@@ -1261,6 +1357,7 @@ async function askAi(mode) {
     toast(error.message);
   } finally {
     button.disabled = false;
+    endAction("ai");
   }
 }
 
@@ -1324,6 +1421,8 @@ function renderWrongAnswerDiff(stdout, expectedOutput, message = "") {
 }
 
 async function execute(kind) {
+  const actionKey = kind === "run" ? "run" : "submit";
+  if (!beginAction(actionKey, kind === "run" ? "程式正在執行中。" : "提交正在進行中。")) return;
   const button = kind === "run" ? $("run") : $("uva");
   button.disabled = true;
   clearDiagnostics();
@@ -1375,6 +1474,7 @@ async function execute(kind) {
     toast(error.message);
   } finally {
     button.disabled = false;
+    endAction(actionKey);
   }
 }
 
@@ -1452,6 +1552,7 @@ $("judge").addEventListener("change", async () => {
 });
 $("problemId").addEventListener("input", (event) => {
   localStorage.setItem(`pi-oj-problem-id-${getJudge()}`, event.target.value.trim());
+  updateProblemValidation();
 });
 $("cpeLevel").addEventListener("change", () => renderCpeStarOptions());
 $("cpeStar").addEventListener("change", (event) => applyCpeStarProblem(event.target.value));

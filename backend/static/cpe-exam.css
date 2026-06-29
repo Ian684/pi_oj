@@ -362,9 +362,26 @@ main {
   gap: 8px;
 }
 
-.tool-toggle[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--accent);
+.exam-input-hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.vim-toggle {
+  min-width: 76px;
+  padding: 0 12px;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--surface)), color-mix(in srgb, var(--accent) 6%, var(--surface-soft)));
+  color: var(--accent-hover);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%);
+}
+
+.vim-toggle[aria-pressed="true"] {
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  border-color: var(--accent-hover);
   color: #fff;
 }
 
@@ -602,6 +619,33 @@ main {
   padding: 12px 14px;
   color: var(--text);
   font: 13px/1.5 Consolas, "Courier New", monospace;
+}
+
+.ai-error-details {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.ai-error-details summary {
+  cursor: pointer;
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ai-error-details pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  padding: 12px;
+  white-space: pre-wrap;
+  color: var(--code);
+  font: 12px/1.55 Consolas, "Courier New", monospace;
 }
 
 .ai-readable h1,
