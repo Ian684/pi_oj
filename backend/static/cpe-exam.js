@@ -303,7 +303,7 @@ function ensurePdfUi() {
         <a id="openSidePdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
         <button id="expandPdf" type="button">放大閱讀</button>
       </div>
-      <iframe id="sideProblemPdf" title="題目 PDF" sandbox="allow-same-origin"></iframe>
+      <iframe id="sideProblemPdf" title="題目 PDF"></iframe>
     `;
     $("aiPanel").after(panel);
   }
