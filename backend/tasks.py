@@ -410,9 +410,43 @@ def extract_uva_problem_statement(problem_number: int) -> str:
     return statement[:80_000]
 
 
-def build_ai_prompt(
-    mode: str,
-    judge: str,
+def format_ai_conversation(conversation: list[dict] | None, limit_messages: int = 12, limit_chars: int = 20_000) -> str:
+    if not conversation:
+        return "(none)"
+    chunks = []
+    used = 0
+    for item in (conversation or [])[-limit_messages:]:
+        role = str((item or {}).get("role", "")).strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str((item or {}).get("content", "")).strip()
+        if not content:
+            continue
+        remaining = max(0, limit_chars - used)
+        if remaining <= 0:
+            break
+        clipped = truncate_context(content, min(remaining, 4_000))
+        used += len(clipped)
+        label = "User" if role == "user" else "Assistant"
+        chunks.append(f"{label}:\n```text\n{clipped}\n```")
+    return "\n\n".join(chunks) if chunks else "(none)"
+
+
+def build_response_style() -> str:
+    return """Response style:
+- Answer in Traditional Chinese.
+- Start with the most useful conclusion; then give reasons, steps, and pitfalls.
+- Use clean Markdown headings and short bullets. Avoid long dense paragraphs.
+- Use fenced code blocks for code or exact stdin/stdout only.
+- Use KaTeX-compatible math only when math helps, such as `$O(E \\log V)$` or `$\\lfloor N/k \\rfloor$`.
+- Be specific to the provided constraints, verdict, code, stdin/stdout, and examples when relevant.
+- If information is missing or uncertain, say what is missing instead of guessing.
+- Do not reveal a full accepted solution unless the user explicitly asks for it.
+- Avoid greetings, filler, and generic encouragement."""
+
+
+def build_common_context(
+    judge_name: str,
     problem_id: str,
     language: str,
     code: str,
@@ -422,18 +456,8 @@ def build_ai_prompt(
     error_log: str,
     verdict: str,
     question: str,
-    problem_statement: str = "",
 ) -> str:
-    judge_name = "Codeforces" if (judge or "uva").lower() == "codeforces" else "UVA"
-    response_style = """Response style:
-- Answer in Traditional Chinese.
-- Use clean Markdown headings and bullets. Keep sections short and scannable.
-- Use fenced code blocks for code or exact stdin/stdout only.
-- Use KaTeX-compatible math only when math helps, such as `$O(E \\log V)$` or `$\\lfloor N/k \\rfloor$`.
-- Be specific to the provided constraints, verdict, code, and examples when they are relevant.
-- If information is missing or uncertain, say what is missing instead of guessing.
-- Avoid greetings, filler, and generic encouragement."""
-    common_context = f"""Online judge: {judge_name}
+    return f"""Online judge: {judge_name}
 Problem: {problem_id or "not provided"}
 Language: {language}
 Verdict: {verdict or "not run yet"}
@@ -469,6 +493,38 @@ error log:
 ```
 """
 
+
+def build_ai_prompt(
+    mode: str,
+    judge: str,
+    problem_id: str,
+    language: str,
+    code: str,
+    input_data: str,
+    expected_output: str,
+    stdout: str,
+    error_log: str,
+    verdict: str,
+    question: str,
+    problem_statement: str = "",
+    conversation: list[dict] | None = None,
+    test_count: int = 12,
+    generation_id: str = "",
+    previous_tests: list[str] | None = None,
+) -> str:
+    judge_name = "Codeforces" if (judge or "uva").lower() == "codeforces" else "UVA"
+    response_style = build_response_style()
+    common_context = build_common_context(judge_name, problem_id, language, code, input_data, expected_output, stdout, error_log, verdict, question)
+    conversation_context = format_ai_conversation(conversation)
+    try:
+        requested_test_count = max(1, min(100, int(test_count or 12)))
+    except (TypeError, ValueError):
+        requested_test_count = 12
+
+    previous_tests = [str(item).strip() for item in (previous_tests or []) if str(item).strip()][:5]
+    previous_tests_context = "\n".join(f"{index + 1}. {truncate_context(item, 900)}" for index, item in enumerate(previous_tests))
+    generation_context = generation_id.strip() or f"gen-{int(time.time() * 1000)}"
+
     if mode == "translate":
         return f"""You are translating an online judge problem statement for a Traditional Chinese reader.
 
@@ -476,11 +532,10 @@ error log:
 
 Task:
 - Translate the problem statement into clear Traditional Chinese.
-- Preserve section names, mathematical notation, variable names, and limits accurately.
+- Preserve section names, mathematical notation, variable names, limits, input format, and output format accurately.
 - Do not solve the problem and do not provide code.
-- If the statement contains input/output format details, make them easy to understand.
+- If the statement contains examples, keep them readable and distinguish input from output.
 - If the user wrote an extra question, answer only if it is about understanding the statement.
-- Keep the original meaning. Do not add algorithm hints unless the user asks for them.
 - Preferred structure: title, problem story/task, input, output, constraints, examples/notes.
 
 Online judge: {judge_name}
@@ -502,13 +557,13 @@ Problem statement extracted from the judge page:
 {response_style}
 
 Task:
-- Answer in Traditional Chinese.
-- Do not create new input. Use the provided stdin exactly as-is.
-- Compute the exact expected stdout for that stdin according to the online judge problem statement.
+- Use the provided stdin exactly as-is. Do not create new input and do not silently fix invalid input.
+- Compute the exact expected stdout according to the online judge problem statement.
+- If multiple cases are present, calculate every case in order.
 - Do not provide a full accepted solution or code.
 - If the stdin is invalid for the problem, explain the issue instead of inventing output.
 - If you cannot confidently compute the output, say so clearly instead of guessing.
-- After the required block, briefly explain the calculation only when it helps verify the answer.
+- Put the required expected stdout block first. After that, add a short verification only when helpful.
 
 Required output format. Put this fenced block first:
 expected stdout:
@@ -535,21 +590,30 @@ Problem statement extracted from the judge page:
 """
 
     if mode == "tests":
-        return f"""You are an Online Judge test-data assistant. Use the online judge problem statement to create local test cases.
+        return f"""You are an Online Judge test-data designer. Use the online judge problem statement to create high-quality local tests.
 
 {response_style}
 
 Task:
-- Answer in Traditional Chinese.
-- Create one combined local test input and its exact expected stdout.
-- Prefer edge cases and bug-hunting cases.
-- Keep the generated test small enough to inspect by hand.
+- Generate exactly {requested_test_count} logical test cases whenever the problem format has separable cases.
+- If the input format is EOF-based or terminator-based and does not have an explicit case count, still create exactly {requested_test_count} logical input records before the required EOF/terminator when the format permits it.
+- If an exact count is truly impossible because one input contains a single indivisible instance, say so in the case manifest and create one strong instance instead. Do not pretend that subparts are separate cases.
+- Every time this request is repeated, create substantially different values, ordering, edge combinations, and case types. Do not reuse the same stdin as earlier attempts.
+- Generation ID for uniqueness: {generation_context}
+- Avoid recent generated inputs listed below. Do not merely shuffle or change one number; use different categories and values.
+- Generate a mix of tiny, small, medium, boundary, and trap cases; do not make every case the same size.
+- Combine all cases into one stdin block that can be pasted directly into the local runner.
+- Produce the exact expected stdout for that stdin.
+- Follow the problem's input format exactly. If the problem uses EOF, do not invent a case count. If it requires T, set T correctly. If it needs a terminator such as `0`, `0 0`, or `#`, include it correctly.
+- Prefer strong tests that can still be inspected by hand. For 50/100 cases, use mostly compact cases and include only a few larger stress cases.
+- Cover sample-like cases, minimum values, boundary values, normal values, repeated values, ordering traps, formatting traps, and likely WA cases.
+- If current code is provided, design at least a few tests that may expose the user's likely bug.
 - Do not provide a full accepted solution or code.
 - If you cannot confidently compute expected output, say so instead of inventing one.
-- Design the test to expose common wrong assumptions, boundary errors, formatting errors, or the user's likely bug if code is provided.
-- After the required blocks, add a short section explaining what the test is checking.
+- The first two fenced blocks must be exactly stdin and expected stdout so the frontend can parse them.
+- After those two blocks, include a `case manifest:` fenced text block with exactly one numbered line per logical case you generated. This manifest is used to verify count.
 
-Required output format. Put these two fenced blocks first:
+Required output format. Put these fenced blocks first:
 stdin:
 ```text
 ...
@@ -558,12 +622,24 @@ expected stdout:
 ```text
 ...
 ```
+case manifest:
+```text
+1. ...
+2. ...
+```
+
+After the blocks, add a short Traditional Chinese section named `測資重點` explaining what the tests check.
+
+Recent generated test summaries to avoid:
+```text
+{previous_tests_context or "(none)"}
+```
 
 Online judge: {judge_name}
 Problem: {problem_id}
 User request:
 ```text
-{truncate_context(question, 4_000) or "Please generate one bug-catching test case."}
+{truncate_context(question, 4_000) or f"Please generate exactly {requested_test_count} bug-catching local test cases with exact expected stdout."}
 ```
 
 Problem statement extracted from the judge page:
@@ -583,42 +659,42 @@ Current code, for bug-focused tests only:
 {response_style}
 
 Rules:
-- Answer the user's custom prompt directly; do not apply the hint/debug/translation templates.
-- The user's question has priority over the current problem context.
+- Answer the user's current prompt directly; do not force the hint/debug/translation templates.
+- Use the previous conversation when it helps maintain continuity.
+- If the user asks a follow-up like "為什麼", "那這樣呢", "這段呢", infer the referent from the previous conversation.
+- The user's latest question has priority over the current problem context.
 - If the user asks a general programming or algorithm question, answer only that question.
-- Do not mention, compare with, or analyze the current online judge problem unless the user explicitly asks about the current problem, their code, a verdict, stdin/stdout, sample tests, or debugging.
-- Use the current problem, code, input, output, and error log only when the user's words clearly need that context.
+- Do not mention or analyze the current online judge problem unless the user clearly asks about the current problem, their code, a verdict, stdin/stdout, sample tests, or debugging.
 - If the user asks for a template, provide a compact reusable code template and a short explanation.
-- Do not start with greetings or self-introduction.
-- Prefer this structure when suitable: short answer first, when to use it, key idea, template, complexity, common pitfalls.
+- Prefer this structure when suitable: conclusion, reason, example/template, complexity, pitfalls.
 - Put code templates in fenced code blocks.
-- Do not reveal a full accepted solution unless the user explicitly asks for it; prefer explanation and next steps.
-- Format the answer with short sections or bullets for readability.
-- If the custom prompt conflicts with the current problem context, follow the custom prompt first and mention the context only if useful.
 - If the user asks "is this problem using algorithm X?", answer yes/no first, then explain the likely correct direction.
 
-Optional context. Ignore this section unless it is clearly relevant:
+Previous conversation, newest context may depend on this:
+{conversation_context}
+
+Optional current problem context. Ignore this section unless it is clearly relevant:
 {common_context}
 """
 
     if mode == "hint":
         instruction = """Help the user understand the problem and find a solution direction.
 - Start with a 1 to 2 sentence problem summary.
-- Identify the likely core observation or algorithm and why it fits the constraints.
-- Include useful complexity and data structure hints.
+- Identify the core observation and likely algorithm/data structure.
+- Explain why the algorithm fits the constraints.
+- Include complexity.
 - Explain input/output or formatting traps if likely.
 - Give a small implementation plan, not full code.
-- Do not provide a full accepted solution.
-- Suggested structure: problem summary, key observation, algorithm, pitfalls, next steps."""
+- Suggested structure: 題意摘要, 關鍵觀察, 解法方向, 實作步驟, 複雜度, 常見陷阱."""
     else:
         instruction = """Help the user debug the current program.
+- Start with the most likely bug or missing piece.
 - Prioritize verdict, stdout, expected stdout, error log, and code.
 - Compare expected stdout and actual stdout when both are present.
-- Point out the most likely 1 to 3 causes, ordered by probability.
 - Reference concrete code behavior instead of vague advice.
-- Suggest targeted tests or variables to inspect.
-- If the code is incomplete, say what part is missing first.
-- Do not rewrite the whole accepted solution."""
+- Give a small counterexample or targeted test when possible.
+- Prefer minimal fixes before proposing a full rewrite.
+- Suggested structure: 判斷結果, 錯誤原因, 反例/測資, 最小修改建議, 為什麼這樣改."""
 
     return f"""You are an Online Judge programming tutor.
 
@@ -628,7 +704,6 @@ Optional context. Ignore this section unless it is clearly relevant:
 
 {common_context}
 """
-
 
 def _read_text_file(path: Path, limit: int) -> str:
     try:
@@ -1789,6 +1864,31 @@ def fetch_test_data_task(judge: str, problem_id: str, source: str) -> dict:
         return {"status": "SE", "error_log": user_error("測資載入失敗。", exc)}
 
 
+
+def ai_temperature_for_mode(mode: str) -> float:
+    mode = (mode or "").lower()
+    env_name = {
+        "tests": "AI_TESTS_TEMPERATURE",
+        "expected": "AI_EXPECTED_TEMPERATURE",
+        "translate": "AI_TRANSLATE_TEMPERATURE",
+        "hint": "AI_HINT_TEMPERATURE",
+        "debug": "AI_DEBUG_TEMPERATURE",
+        "ask": "AI_ASK_TEMPERATURE",
+    }.get(mode, "AI_TEMPERATURE")
+    fallback = {
+        "tests": "0.85",
+        "expected": "0.15",
+        "translate": "0.25",
+        "hint": "0.45",
+        "debug": "0.35",
+        "ask": "0.5",
+    }.get(mode, "0.4")
+    try:
+        return float(os.getenv(env_name, os.getenv("GEMINI_TEMPERATURE", os.getenv("OPENAI_TEMPERATURE", fallback))))
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 @worker.task
 def ask_ai_helper_task(
     mode: str,
@@ -1802,6 +1902,10 @@ def ask_ai_helper_task(
     error_log: str,
     verdict: str,
     question: str,
+    conversation: list[dict] | None = None,
+    test_count: int = 12,
+    generation_id: str = "",
+    previous_tests: list[str] | None = None,
 ) -> dict:
     provider = os.getenv("AI_PROVIDER", AI_PROVIDER).lower()
     if provider not in {"openai", "gemini"}:
@@ -1849,7 +1953,13 @@ def ask_ai_helper_task(
         verdict=verdict,
         question=question,
         problem_statement=problem_statement,
+        conversation=conversation,
+        test_count=test_count,
+        generation_id=generation_id,
+        previous_tests=previous_tests,
     )
+
+    temperature = ai_temperature_for_mode(mode)
 
     try:
         if provider == "openai":
@@ -1869,7 +1979,8 @@ def ask_ai_helper_task(
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    "max_output_tokens": int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "900")),
+                    "max_output_tokens": int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "3000")),
+                    "temperature": temperature,
                 },
                 timeout=(10, 90),
             )
@@ -1890,8 +2001,8 @@ def ask_ai_helper_task(
                     },
                     "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                     "generationConfig": {
-                        "maxOutputTokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "900")),
-                        "temperature": float(os.getenv("GEMINI_TEMPERATURE", "0.4")),
+                        "maxOutputTokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "3000")),
+                        "temperature": temperature,
                     },
                 },
                 timeout=(10, 90),
@@ -1926,7 +2037,7 @@ def ask_ai_helper_task(
         "mode": mode,
         "provider": provider,
         "model": model,
-        "message": text[:20_000],
+        "message": text[:40_000],
     }
 
 
@@ -2217,4 +2328,5 @@ def submit_uva_task(problem_id: str, language: str, code: str) -> dict:
         return UvaClient(username, password).submit(problem_id, language, code)
     except Exception as exc:
         return {"status": "SE", "error_log": user_error("UVA 提交失敗。", exc)}
+
 

@@ -74,6 +74,19 @@ class RunRequest(BaseModel):
     expected_output: str = Field(default="", max_length=1_000_000)
 
 
+class AiConversationMessage(BaseModel):
+    role: str = Field(max_length=16)
+    content: str = Field(default="", max_length=20_000)
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        role = (value or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            raise ValueError("AI 對話角色格式錯誤")
+        return role
+
+
 class AiHelpRequest(BaseModel):
     mode: str
     judge: str = Field(default="uva")
@@ -86,6 +99,10 @@ class AiHelpRequest(BaseModel):
     error_log: str = Field(default="", max_length=50_000)
     verdict: str = Field(default="", max_length=32)
     question: str = Field(default="", max_length=4_000)
+    conversation: list[AiConversationMessage] = Field(default_factory=list, max_length=24)
+    test_count: int = Field(default=12, ge=1, le=100)
+    generation_id: str = Field(default="", max_length=80)
+    previous_tests: list[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("mode")
     @classmethod
@@ -251,6 +268,10 @@ def ai_help(payload: AiHelpRequest) -> dict:
         error_log=payload.error_log,
         verdict=payload.verdict,
         question=payload.question,
+        conversation=[message.model_dump() for message in payload.conversation],
+        test_count=payload.test_count,
+        generation_id=payload.generation_id,
+        previous_tests=payload.previous_tests,
     )
     return {"task_id": task.id, "status": "QUEUED"}
 
@@ -290,4 +311,5 @@ def task_result(task_id: str) -> dict:
     if result.state == "FAILURE":
         return {"task_id": task_id, "state": "FAILURE", "result": {"status": "SE", "error_log": str(result.info)}}
     return {"task_id": task_id, "state": result.state, "result": result.result if result.ready() else None}
+
 

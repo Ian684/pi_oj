@@ -6,6 +6,8 @@ const STATE_VERSION = 3;
 const DURATION_MS = 3 * 60 * 60 * 1000;
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
+const FLOATING_STATEMENT_STORAGE_KEY = "pi-oj-cpe-floating-statement";
+const THEME_STORAGE_KEY = "pi-oj-cpe-theme";
 
 const levelLabels = {must: "必考", star1: "★", star2: "★★", star3: "★★★", star4: "★★★★", star5: "★★★★★"};
 const drawPlan = [["must", 1], ["star1", 2], ["star2", 2], ["star3", 1], ["star4", 1]];
@@ -28,6 +30,25 @@ let toastShowing = false;
 const busyActions = new Set();
 let activePopover = null;
 let state = loadState();
+
+function currentExamTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function applyExamTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  const dark = next === "dark";
+  if ($("themeIcon")) $("themeIcon").textContent = dark ? "☼" : "☾";
+  if ($("themeLabel")) $("themeLabel").textContent = dark ? "白色" : "黑色";
+  if ($("themeToggle")) $("themeToggle").setAttribute("aria-label", dark ? "切換白色模式" : "切換黑色模式");
+  if (window.monaco?.editor && codeEditor) {
+    monaco.editor.setTheme(currentEditorTheme());
+    codeEditor.updateOptions(currentEditorOptions());
+  }
+}
+
+applyExamTheme(localStorage.getItem(THEME_STORAGE_KEY) || "light");
 
 const languageOptions = {
   exam: [
@@ -170,9 +191,27 @@ function defaultState() {
     submitCounts: {},
     activeIndex: 0,
     testSource: "sample",
+    aiTestCount: 12,
+    aiTestHistoryByProblem: {},
     activeToolTab: "test",
     permissions: {aiHelper: false, aiTests: true, udebug: true, vim: false},
   };
+}
+
+function getAiTestCount() {
+  const raw = Number.parseInt($("aiTestCount")?.value || state.aiTestCount || "12", 10);
+  if (!Number.isFinite(raw)) return 12;
+  return Math.min(100, Math.max(1, raw));
+}
+
+function saveAiTestCountSetting() {
+  state.aiTestCount = getAiTestCount();
+  saveState();
+}
+
+function aiTestCountPrompt(count = getAiTestCount(), attempt = 1) {
+  const retryNote = attempt > 1 ? " This is a retry because the previous response did not match the requested case count; correct the count and use a clearly different stdin." : "";
+  return `Generate exactly ${count} useful CPE exam local test cases as one combined stdin, with exact expected stdout and a case manifest containing exactly ${count} numbered lines.${retryNote}`;
 }
 
 function permissionsForMode(mode) {
@@ -192,6 +231,8 @@ function loadState() {
       ...defaults,
       ...parsed,
       pausedTotalMs: Number(parsed.pausedTotalMs || 0),
+      aiTestCount: Math.min(100, Math.max(1, Number.parseInt(parsed.aiTestCount || 12, 10) || 12)),
+      aiTestHistoryByProblem: parsed.aiTestHistoryByProblem && typeof parsed.aiTestHistoryByProblem === "object" ? parsed.aiTestHistoryByProblem : {},
       languageByCompilerMode: {...defaults.languageByCompilerMode, ...(parsed.languageByCompilerMode || {})},
       permissions: {...defaults.permissions, ...(parsed.permissions || {})},
       stateVersion: STATE_VERSION,
@@ -293,15 +334,16 @@ function ensurePdfUi() {
   if (!$("pdfPanel")) {
     const panel = document.createElement("section");
     panel.id = "pdfPanel";
-    panel.className = "side-panel pdf-panel";
+    panel.className = "side-panel pdf-pane";
     panel.role = "tabpanel";
     panel.setAttribute("aria-labelledby", "pdfTab");
     panel.hidden = true;
     panel.innerHTML = `
-      <div class="pdf-side-toolbar">
+      <div class="pdf-toolbar">
         <strong id="sidePdfTitle">題目 PDF</strong>
-        <a id="openSidePdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
         <button id="expandPdf" type="button">放大閱讀</button>
+        <button id="floatPdf" type="button">浮動題目</button>
+        <a id="openSidePdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
       </div>
       <iframe id="sideProblemPdf" title="題目 PDF"></iframe>
     `;
@@ -386,6 +428,7 @@ function updateTestSourceUi() {
   $("expectedLabel").textContent = labels[1];
   $("loadTests").hidden = !["sample", "ai"].includes(source);
   $("loadTests").textContent = source === "ai" ? "AI 產生" : "載入";
+  if ($("aiTestCountLabel")) $("aiTestCountLabel").hidden = source !== "ai";
   $("openUdebug").hidden = source !== "udebug";
   $("openUdebug").textContent = "開啟 uDebug";
   $("aiExpected").hidden = source !== "custom";
@@ -512,10 +555,162 @@ function setAiOutput(message, isError = false) {
   renderAiReadable(message, isError);
 }
 
+function makeAiId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `ai-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function currentAiStore() {
+  const problemKey = currentProblemKey();
+  if (!problemKey) return null;
+  const existing = state.aiByProblem[problemKey];
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+    state.aiByProblem[problemKey] = {question: "", output: "", history: [], activeThreadId: ""};
+  } else {
+    if (!Array.isArray(existing.history)) existing.history = [];
+    if (typeof existing.activeThreadId !== "string") existing.activeThreadId = "";
+  }
+  return state.aiByProblem[problemKey];
+}
+
+function aiTitleFrom(value, fallback = "AI 回答") {
+  const text = String(value || "").replace(/[#*_`>\[\]()]/g, "").split("\n").map((line) => line.trim()).find(Boolean) || fallback;
+  return text.length > 36 ? `${text.slice(0, 36)}…` : text;
+}
+
+function activeAiThread() {
+  const store = currentAiStore();
+  if (!store) return null;
+  return store.history.find((thread) => thread.id === store.activeThreadId) || null;
+}
+
+function createAiThread(title = "新對話") {
+  const store = currentAiStore();
+  if (!store) return null;
+  const thread = {id: makeAiId(), title, createdAt: Date.now(), updatedAt: Date.now(), messages: [], output: ""};
+  store.history.unshift(thread);
+  if (store.history.length > 30) store.history.length = 30;
+  store.activeThreadId = thread.id;
+  saveState();
+  renderAiHistory();
+  return thread;
+}
+
+function renderAiHistory() {
+  if (!$("aiHistory")) return;
+  const store = currentAiStore();
+  const threads = store?.history || [];
+  const activeId = store?.activeThreadId || "";
+  const options = [];
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = threads.length ? "選擇 AI 對話紀錄…" : "尚無 AI 對話紀錄";
+  options.push(empty);
+  for (const thread of threads) {
+    const option = document.createElement("option");
+    option.value = thread.id;
+    const time = thread.updatedAt ? new Date(thread.updatedAt).toLocaleString("zh-TW", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
+    option.textContent = `${thread.title || "AI 回答"}${time ? `｜${time}` : ""}`;
+    options.push(option);
+  }
+  $("aiHistory").replaceChildren(...options);
+  $("aiHistory").value = activeId && threads.some((thread) => thread.id === activeId) ? activeId : "";
+}
+
+function loadAiThread(threadId) {
+  const store = currentAiStore();
+  if (!store) return;
+  const thread = store.history.find((item) => item.id === threadId);
+  if (!thread) return;
+  store.activeThreadId = thread.id;
+  const lastUser = [...(thread.messages || [])].reverse().find((message) => message.role === "user");
+  if (lastUser?.content) $("aiQuestion").value = lastUser.content;
+  setAiOutput(thread.output || "", false);
+  store.question = $("aiQuestion").value;
+  store.output = thread.output || "";
+  saveState();
+  renderAiHistory();
+}
+
+function startNewAiConversation() {
+  const store = currentAiStore();
+  if (!store) return;
+  store.activeThreadId = "";
+  store.question = "";
+  store.output = "";
+  $("aiQuestion").value = "";
+  setAiOutput("", false);
+  saveState();
+  renderAiHistory();
+  $("aiQuestion").focus();
+}
+
+function clearCurrentAiHistory() {
+  const store = currentAiStore();
+  if (!store) return;
+  store.history = [];
+  store.activeThreadId = "";
+  store.output = "";
+  setAiOutput("", false);
+  saveState();
+  renderAiHistory();
+}
+
+function aiConversationForRequest(mode) {
+  if (mode !== "ask") return [];
+  const thread = activeAiThread();
+  if (!thread?.messages?.length) return [];
+  return thread.messages.slice(-12).map((message) => ({role: message.role, content: message.content}));
+}
+
+function formatAiResult(result) {
+  const names = {hint: "AI 提示", debug: "AI 除錯", translate: "AI 翻譯", tests: "AI 測資", expected: "AI 輸出計算", ask: "AI 回答"};
+  const title = names[result.mode] || "AI 回答";
+  const meta = [result.provider, result.model].filter(Boolean).join(" / ");
+  const parts = [`# ${title}${meta ? ` (${meta})` : ""}`];
+  if (result.message) parts.push(result.message);
+  if (result.error_log) parts.push("error:\n```text\n" + result.error_log + "\n```");
+  return parts.join("\n\n") || JSON.stringify(result, null, 2);
+}
+
+function recordAiResult(result, renderedText) {
+  if (!result || result.status === "SE") return;
+  const mode = result.mode || "ask";
+  const names = {hint: "AI 提示", debug: "AI 除錯", translate: "AI 翻譯", tests: "AI 測資", expected: "AI 輸出計算", ask: "AI 回答"};
+  const prompt = $("aiQuestion").value.trim() || names[mode] || "AI 回答";
+  let thread = activeAiThread();
+  if (!thread) thread = createAiThread(aiTitleFrom(prompt || result.message, names[mode] || "AI 回答"));
+  if (!thread) return;
+  if (!thread.title || thread.title === "新對話") thread.title = aiTitleFrom(prompt || result.message, names[mode] || "AI 回答");
+  thread.messages = Array.isArray(thread.messages) ? thread.messages : [];
+  thread.messages.push({role: "user", content: prompt, mode, createdAt: Date.now()});
+  thread.messages.push({role: "assistant", content: result.message || result.error_log || "", mode, createdAt: Date.now()});
+  if (thread.messages.length > 30) thread.messages = thread.messages.slice(-30);
+  thread.output = renderedText || result.message || "";
+  thread.updatedAt = Date.now();
+  const store = currentAiStore();
+  if (store) {
+    store.question = $("aiQuestion").value;
+    store.output = thread.output;
+  }
+  saveState();
+  renderAiHistory();
+}
+
+function showAiResult(result, persistHistory = true) {
+  const rendered = formatAiResult(result);
+  setAiOutput(rendered, result.status === "SE");
+  if (persistHistory) recordAiResult(result, rendered);
+}
+
 function isRunning() { return Boolean(state.startedAt && !state.endedAt && !state.pausedAt); }
 function isPaused() { return Boolean(state.startedAt && !state.endedAt && state.pausedAt); }
 function isEnded() { return Boolean(state.endedAt); }
 function isStarted() { return Boolean(state.startedAt); }
+function canUseExamTools() { return Boolean(state.startedAt && !state.endedAt); }
+function examToolLockedMessage() {
+  return state.endedAt ? "考試已結束，不能再使用測資、題目 PDF 或 AI 助手。" : "請先開始考試，才能使用測資、題目 PDF 或 AI 助手。";
+}
 
 function elapsedMs(targetState = state, now = Date.now()) {
   if (!targetState.startedAt) return 0;
@@ -553,7 +748,12 @@ function hasCodeVariantForProblem(problemKey = currentProblemKey()) {
   return Object.keys(state.codeByProblem || {}).some((key) => key.startsWith(prefix));
 }
 function currentMode() { return monacoModes[state.language] || "plaintext"; }
-function currentEditorTheme() { return state.compilerMode === "exam" ? "scintilla-cpe" : "vs"; }
+function currentEditorTheme() {
+  if (state.compilerMode === "exam") {
+    return currentExamTheme() === "dark" ? "scintilla-cpe-dark" : "scintilla-cpe";
+  }
+  return currentExamTheme() === "dark" ? "vs-dark" : "vs";
+}
 function currentEditorOptions() {
   if (state.compilerMode === "exam") {
     return {
@@ -696,7 +896,12 @@ function saveCurrentBuffers(sourceOverride = null) {
   const bufferKey = testBufferKey(problemKey, source);
   state.inputByProblem[bufferKey] = $("input").value;
   state.expectedByProblem[bufferKey] = $("expected").value;
-  state.aiByProblem[problemKey] = {question: $("aiQuestion").value, output: $("aiOutput").dataset.raw || $("aiOutput").textContent};
+  const existingAi = state.aiByProblem[problemKey] && typeof state.aiByProblem[problemKey] === "object" ? state.aiByProblem[problemKey] : {};
+  state.aiByProblem[problemKey] = {
+    ...existingAi,
+    question: $("aiQuestion").value,
+    output: $("aiOutput").dataset.raw || $("aiOutput").textContent,
+  };
   state.testSource = source;
   saveState();
 }
@@ -753,18 +958,54 @@ function syncModeControls() {
 
 function updateToolPermissions() {
   const p = state.permissions;
-  $("vimToggle").disabled = !p.vim || !monacoVimApi || !codeEditor;
-  $("vimToggle").title = !p.vim ? "目前模式禁用 Vim" : (!monacoVimApi ? "Vim 模組尚未載入" : "");
-  $("openUdebug").disabled = !p.udebug;
-  $("aiExpected").disabled = !p.aiTests;
-  $("loadTests").disabled = $("testSource").value === "ai" && !p.aiTests;
-  $("aiAsk").disabled = !p.aiHelper;
-  $("aiHint").disabled = !p.aiHelper;
-  $("aiDebug").disabled = !p.aiHelper;
-  $("aiTranslate").disabled = !p.aiHelper;
+  const toolsEnabled = canUseExamTools();
+  const lockTitle = toolsEnabled ? "" : examToolLockedMessage();
+
+  for (const id of ["testTab", "pdfTab", "aiTab"]) {
+    if ($(id)) {
+      $(id).disabled = !toolsEnabled;
+      $(id).title = lockTitle;
+    }
+  }
+
+  if ($("testSource")) {
+    $("testSource").disabled = !toolsEnabled;
+    $("testSource").title = lockTitle;
+  }
+  if ($("input")) $("input").disabled = !toolsEnabled;
+  if ($("expected")) $("expected").disabled = !toolsEnabled;
+
+  $("vimToggle").disabled = !toolsEnabled || !p.vim || !monacoVimApi || !codeEditor;
+  $("vimToggle").title = !toolsEnabled ? lockTitle : (!p.vim ? "目前模式禁用 Vim" : (!monacoVimApi ? "Vim 模組尚未載入" : ""));
+
+  $("runCode").disabled = !toolsEnabled;
+  $("submitUva").disabled = !toolsEnabled;
+  $("openUdebug").disabled = !toolsEnabled || !p.udebug;
+  $("aiExpected").disabled = !toolsEnabled || !p.aiTests;
+  $("loadTests").disabled = !toolsEnabled || ($("testSource").value === "ai" && !p.aiTests);
+  if ($("aiTestCount")) $("aiTestCount").disabled = !toolsEnabled || !p.aiTests;
+  $("aiAsk").disabled = !toolsEnabled || !p.aiHelper;
+  $("aiHint").disabled = !toolsEnabled || !p.aiHelper;
+  $("aiDebug").disabled = !toolsEnabled || !p.aiHelper;
+  $("aiTranslate").disabled = !toolsEnabled || !p.aiHelper;
+  if ($("expandPdf")) $("expandPdf").disabled = !toolsEnabled;
+  if ($("floatPdf")) $("floatPdf").disabled = !toolsEnabled;
+  if ($("openSidePdf")) {
+    $("openSidePdf").classList.toggle("disabled", !toolsEnabled);
+    $("openSidePdf").setAttribute("aria-disabled", String(!toolsEnabled));
+    $("openSidePdf").tabIndex = toolsEnabled ? 0 : -1;
+  }
+
   for (const option of $("testSource").options) {
-    if (option.value === "udebug") option.disabled = !p.udebug;
-    if (option.value === "ai") option.disabled = !p.aiTests;
+    if (option.value === "udebug") option.disabled = !toolsEnabled || !p.udebug;
+    else if (option.value === "ai") option.disabled = !toolsEnabled || !p.aiTests;
+    else option.disabled = !toolsEnabled;
+  }
+  if (!toolsEnabled) {
+    if (vimMode) setVimMode(false);
+    if (state.activeToolTab !== "test") state.activeToolTab = "test";
+    updateTestSourceUi();
+    return;
   }
   if (($("testSource").value === "udebug" && !p.udebug) || ($("testSource").value === "ai" && !p.aiTests)) {
     switchTestSource("sample", false);
@@ -930,9 +1171,10 @@ function renderCurrentProblem() {
   if ((state.activeToolTab || "test") === "pdf") setSidePdf(problem);
   setCode(codeForCurrentProblem());
   loadCurrentTestBuffers();
-  const ai = state.aiByProblem[problem.id] || {};
+  const ai = currentAiStore() || {};
   $("aiQuestion").value = ai.question || "";
   setAiOutput(ai.output || "");
+  renderAiHistory();
   const record = submittedRecord(state, problem.id);
   setVerdict(record.verdict || record.status || "尚未執行");
   renderLastAnswer();
@@ -1023,6 +1265,7 @@ function renderHistory() {
 }
 
 function renderToolTabs() {
+  if (!canUseExamTools() && state.activeToolTab !== "test") state.activeToolTab = "test";
   const active = state.activeToolTab || "test";
   $("testTab").classList.toggle("active", active === "test");
   $("pdfTab").classList.toggle("active", active === "pdf");
@@ -1073,8 +1316,8 @@ function render() {
   $("pauseExam").disabled = !isStarted() || isEnded();
   $("finishExam").disabled = !isStarted() || isEnded();
   $("testSource").value = state.testSource || "sample";
-  updateToolPermissions();
   renderToolTabs();
+  updateToolPermissions();
   renderProblemList();
   renderCurrentProblem();
   renderSummary();
@@ -1139,6 +1382,7 @@ function showResult(result) {
 }
 
 async function execute(kind) {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   const actionKey = kind === "run" ? "run" : "submit";
   if (!beginAction(actionKey, kind === "run" ? "程式正在執行中。" : "提交正在進行中。")) return;
   const problem = currentProblem();
@@ -1184,12 +1428,58 @@ function parseAiGeneratedTest(message) {
   return {input: inputMatch[1].replace(/\n$/, ""), expected: expectedMatch[1].replace(/\n$/, "")};
 }
 
+
+function parseAiCaseManifest(message) {
+  const match = String(message || "").match(/(?:^|\n)\s*case\s+manifest\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
+  if (!match) return {count: null, lines: []};
+  const lines = match[1].split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const numbered = lines.filter((line) => /^\d+[.)、]/.test(line));
+  return {count: numbered.length || lines.length, lines};
+}
+
+function textHash(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function compactPreview(value, limit = 900) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+function recentAiTestSummaries(problem = currentProblem()) {
+  if (!problem) return [];
+  const items = Array.isArray(state.aiTestHistoryByProblem?.[problem.id]) ? state.aiTestHistoryByProblem[problem.id] : [];
+  return items.slice(-5).map((item, index) => `#${index + 1} hash=${item.hash || ""}; ${item.summary || ""}`);
+}
+
+function recordAiTestHistory(problem, input, message) {
+  if (!problem) return;
+  state.aiTestHistoryByProblem = state.aiTestHistoryByProblem || {};
+  const manifest = parseAiCaseManifest(message || "");
+  const item = {hash: textHash(input), summary: `cases=${manifest.count ?? "unknown"}; ${compactPreview(input)}`, createdAt: Date.now()};
+  const items = Array.isArray(state.aiTestHistoryByProblem[problem.id]) ? state.aiTestHistoryByProblem[problem.id].filter((old) => old.hash !== item.hash) : [];
+  items.push(item);
+  state.aiTestHistoryByProblem[problem.id] = items.slice(-5);
+  saveState();
+}
+
+function makeAiGenerationId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `gen-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function parseAiExpectedOutput(message) {
   const match = message.match(/(?:^|\n)\s*(?:expected\s+stdout|expected\s+output|stdout|output)\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
   return match ? match[1].replace(/\n$/, "") : null;
 }
 
 async function loadTests() {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   if (!beginAction("tests", "測資正在載入中。")) return;
   const problem = currentProblem();
   if (!problem) {
@@ -1216,13 +1506,35 @@ async function loadTests() {
   $("loadTests").disabled = true;
   try {
     if (source === "ai") {
-      const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({mode: "tests", judge: "uva", problem_id: problem.id, language: state.language, code: getCode(), question: "Generate one useful CPE exam local test case with exact expected stdout."})});
-      const result = await poll(queued.task_id);
-      const parsed = parseAiGeneratedTest(result.message || "");
+      const targetCount = getAiTestCount();
+      let result = null;
+      let parsed = null;
+      let manifest = {count: null, lines: []};
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({
+          mode: "tests",
+          judge: "uva",
+          problem_id: problem.id,
+          language: state.language,
+          code: getCode(),
+          question: aiTestCountPrompt(targetCount, attempt),
+          test_count: targetCount,
+          generation_id: makeAiGenerationId(),
+          previous_tests: recentAiTestSummaries(problem),
+        })});
+        result = await poll(queued.task_id);
+        parsed = parseAiGeneratedTest(result.message || "");
+        manifest = parseAiCaseManifest(result.message || "");
+        if (!parsed) break;
+        if (manifest.count === targetCount || attempt === 2) break;
+        setAiOutput(`AI 第 ${attempt} 次未符合目標筆數（宣告 ${manifest.count ?? "未知"} 筆），正在要求重產 ${targetCount} 筆且換一組不同測資…`);
+      }
       if (!parsed) throw new Error("AI 回答沒有包含可解析的 input/output。");
       $("input").value = parsed.input;
       $("expected").value = parsed.expected;
-      setAiOutput(result.message || "");
+      recordAiTestHistory(problem, parsed.input, result.message || "");
+      showAiResult(result);
+      if (manifest.count !== null && manifest.count !== targetCount) toast(`AI 宣告 ${manifest.count} 筆，目標 ${targetCount} 筆，請再按一次可換新測資。`);
     } else {
       const queued = await request("/api/tests/fetch", {method: "POST", body: JSON.stringify({judge: "uva", problem_id: problem.id, source})});
       const result = await poll(queued.task_id);
@@ -1240,6 +1552,7 @@ async function loadTests() {
 }
 
 async function aiExpectedOutput() {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   if (!beginAction("ai-tests", "AI 測資正在處理中。")) return;
   const problem = currentProblem();
   if (!problem) {
@@ -1259,11 +1572,11 @@ async function aiExpectedOutput() {
   }
   $("aiExpected").disabled = true;
   try {
-    const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({mode: "expected", judge: "uva", problem_id: problem.id, language: state.language, code: getCode(), input_data: $("input").value, question: "Compute the exact expected stdout for this stdin."})});
+    const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({mode: "expected", judge: "uva", problem_id: problem.id, language: state.language, code: getCode(), input_data: $("input").value, question: "Compute the exact expected stdout for this stdin.", conversation: [], test_count: getAiTestCount(), generation_id: "", previous_tests: []})});
     const result = await poll(queued.task_id);
     const expected = parseAiExpectedOutput(result.message || "") || (result.message || "").trim();
     $("expected").value = expected;
-    setAiOutput(result.message || expected);
+    showAiResult(result);
     saveCurrentBuffers();
   } catch (error) {
     toast(error.message);
@@ -1275,6 +1588,7 @@ async function aiExpectedOutput() {
 }
 
 async function askAi(mode) {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   if (!beginAction("ai", "AI 助教正在回覆中。")) return;
   const problem = currentProblem();
   if (!problem) {
@@ -1297,9 +1611,9 @@ async function askAi(mode) {
   setAiOutput("AI 正在回覆...");
   try {
     const record = state.records[problem.id] || {};
-    const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({mode, judge: "uva", problem_id: problem.id, language: state.language, code: getCode(), input_data: $("input").value, expected_output: $("expected").value, stdout: record.stdout || "", error_log: record.error_log || "", verdict: record.verdict || record.status || "", question: $("aiQuestion").value})});
+    const queued = await request("/api/ai/help", {method: "POST", body: JSON.stringify({mode, judge: "uva", problem_id: problem.id, language: state.language, code: getCode(), input_data: $("input").value, expected_output: $("expected").value, stdout: record.stdout || "", error_log: record.error_log || "", verdict: record.verdict || record.status || "", question: mode === "tests" ? aiTestCountPrompt() : $("aiQuestion").value, conversation: aiConversationForRequest(mode), test_count: getAiTestCount(), generation_id: mode === "tests" ? makeAiGenerationId() : "", previous_tests: mode === "tests" ? recentAiTestSummaries(problem) : []})});
     const result = await poll(queued.task_id);
-    setAiOutput(result.message || result.error_log || JSON.stringify(result, null, 2));
+    showAiResult(result);
     saveCurrentBuffers();
   } catch (error) {
     setAiOutput(error.message, true);
@@ -1318,6 +1632,28 @@ function openUdebug() {
   window.open(`https://www.udebug.com/UVa/${problem.id}`, "_blank", "noopener,noreferrer");
 }
 
+async function loadSampleForProblem(problem, {silent = true} = {}) {
+  if (!problem?.id) return false;
+  try {
+    const queued = await request("/api/tests/fetch", {method: "POST", body: JSON.stringify({judge: "uva", problem_id: problem.id, source: "sample"})});
+    const result = await poll(queued.task_id);
+    if (!result || result.status !== "FETCHED") throw new Error(result?.error_log || "題目測資載入失敗");
+    const inputKey = testBufferKey(problem.id, "sample");
+    state.inputByProblem[inputKey] = result.input_data || "";
+    state.expectedByProblem[inputKey] = result.expected_output || "";
+    if (currentProblem()?.id === problem.id && currentTestSource() === "sample") {
+      $("input").value = state.inputByProblem[inputKey];
+      $("expected").value = state.expectedByProblem[inputKey];
+    }
+    saveState();
+    if (!silent) toast(result.message || "題目範例測資已載入");
+    return true;
+  } catch (error) {
+    if (!silent) toast(error.message);
+    return false;
+  }
+}
+
 function setSidePdf(problem) {
   if (!problem) {
     $("sidePdfTitle").textContent = "題目 PDF";
@@ -1333,15 +1669,18 @@ function setSidePdf(problem) {
 }
 
 function openProblemPdf() {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   const problem = currentProblem();
   if (!problem) return;
   setSidePdf(problem);
+  loadSampleForProblem(problem, {silent: true});
   state.activeToolTab = "pdf";
   saveState();
   renderToolTabs();
 }
 
 function expandProblemPdf() {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   const problem = currentProblem();
   if (!problem) return;
   $("statementTitle").textContent = `UVA ${problem.id} - ${problem.title || ""}`;
@@ -1352,6 +1691,105 @@ function expandProblemPdf() {
 function closeStatement() {
   $("statementPane").hidden = true;
   $("statementFrame").removeAttribute("src");
+}
+
+
+function defaultFloatingRect() {
+  return {left: 84, top: 84, width: Math.min(720, window.innerWidth - 130), height: Math.min(720, window.innerHeight - 130)};
+}
+
+function clampFloatingRect(rect) {
+  const minWidth = 360;
+  const minHeight = 260;
+  const width = Math.min(Math.max(Number(rect.width) || minWidth, minWidth), Math.max(minWidth, window.innerWidth - 24));
+  const height = Math.min(Math.max(Number(rect.height) || minHeight, minHeight), Math.max(minHeight, window.innerHeight - 24));
+  const left = Math.min(Math.max(Number(rect.left) || 12, 8), Math.max(8, window.innerWidth - width - 8));
+  const top = Math.min(Math.max(Number(rect.top) || 12, 8), Math.max(8, window.innerHeight - height - 8));
+  return {left, top, width, height};
+}
+
+function loadFloatingRect() {
+  try {
+    return clampFloatingRect(JSON.parse(localStorage.getItem(FLOATING_STATEMENT_STORAGE_KEY) || "null") || defaultFloatingRect());
+  } catch {
+    return clampFloatingRect(defaultFloatingRect());
+  }
+}
+
+function applyFloatingRect(rect) {
+  const target = $("floatingStatement");
+  if (!target) return;
+  const next = clampFloatingRect(rect);
+  target.style.left = `${next.left}px`;
+  target.style.top = `${next.top}px`;
+  target.style.width = `${next.width}px`;
+  target.style.height = `${next.height}px`;
+}
+
+function saveFloatingRect() {
+  const target = $("floatingStatement");
+  if (!target || target.hidden) return;
+  localStorage.setItem(FLOATING_STATEMENT_STORAGE_KEY, JSON.stringify(clampFloatingRect(target.getBoundingClientRect())));
+}
+
+function openFloatingStatement() {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
+  const problem = currentProblem();
+  if (!problem) return;
+  const url = `/api/problems/${problem.id}/pdf`;
+  $("floatingStatementTitle").textContent = `UVA ${problem.id} - ${problem.title || ""}`;
+  if ($("floatingStatementFrame").getAttribute("src") !== url) $("floatingStatementFrame").src = url;
+  applyFloatingRect(loadFloatingRect());
+  $("floatingStatement").hidden = false;
+  loadSampleForProblem(problem, {silent: true});
+}
+
+function closeFloatingStatement() {
+  saveFloatingRect();
+  $("floatingStatement").hidden = true;
+}
+
+function dockFloatingStatement(side) {
+  const width = Math.min(680, Math.max(420, Math.floor(window.innerWidth * 0.42)));
+  const height = Math.min(window.innerHeight - 96, Math.max(420, Math.floor(window.innerHeight * 0.82)));
+  const top = 76;
+  const left = side === "right" ? window.innerWidth - width - 24 : 24;
+  applyFloatingRect({left, top, width, height});
+  saveFloatingRect();
+}
+
+function resetFloatingStatement() {
+  applyFloatingRect(defaultFloatingRect());
+  saveFloatingRect();
+}
+
+function initializeFloatingStatementDrag() {
+  const panel = $("floatingStatement");
+  const header = $("floatingStatementHeader");
+  const frame = $("floatingStatementFrame");
+  if (!panel || !header) return;
+  let drag = null;
+  header.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button")) return;
+    const rect = panel.getBoundingClientRect();
+    drag = {pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top, width: rect.width, height: rect.height};
+    header.setPointerCapture(event.pointerId);
+    if (frame) frame.style.pointerEvents = "none";
+    event.preventDefault();
+  });
+  header.addEventListener("pointermove", (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    applyFloatingRect({left: event.clientX - drag.offsetX, top: event.clientY - drag.offsetY, width: drag.width, height: drag.height});
+  });
+  const endDrag = (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag = null;
+    if (frame) frame.style.pointerEvents = "";
+    saveFloatingRect();
+  };
+  header.addEventListener("pointerup", endDrag);
+  header.addEventListener("pointercancel", endDrag);
+  panel.addEventListener("mouseup", saveFloatingRect);
 }
 
 function exportRecord() {
@@ -1533,6 +1971,34 @@ function defineExamTheme() {
       "editorIndentGuide.activeBackground1": "#bdbdbd",
     },
   });
+
+  // 考試編譯器在黑色模式下不要再用 Monaco 預設深色底，改成和考試頁整體面板背景同步。
+  monaco.editor.defineTheme("scintilla-cpe-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      {token: "keyword", foreground: "8bd2ff", fontStyle: "bold"},
+      {token: "type", foreground: "8bd2ff", fontStyle: "bold"},
+      {token: "comment", foreground: "7ccf8a", fontStyle: "italic"},
+      {token: "string", foreground: "ffb3de"},
+      {token: "number", foreground: "ffb27a"},
+      {token: "predefined", foreground: "8bd2ff"},
+    ],
+    colors: {
+      "editor.background": "#181f1b",
+      "editor.foreground": "#e7ece8",
+      "editorGutter.background": "#181f1b",
+      "editorLineNumber.foreground": "#94a099",
+      "editorLineNumber.activeForeground": "#e7ece8",
+      "editorCursor.foreground": "#e7ece8",
+      "editor.selectionBackground": "#2f5d4c",
+      "editor.inactiveSelectionBackground": "#263a32",
+      "editor.lineHighlightBackground": "#1d2521",
+      "editor.lineHighlightBorder": "#1d2521",
+      "editorIndentGuide.background1": "#303a34",
+      "editorIndentGuide.activeBackground1": "#52615a",
+    },
+  });
 }
 
 async function initializeEditor() {
@@ -1638,6 +2104,12 @@ function setVimMode(enabled) {
 
 ensureTestUi();
 ensurePdfUi();
+if ($("aiTestCount")) {
+  const savedCount = String(getAiTestCount());
+  const optionValues = [...$("aiTestCount").options].map((option) => option.value);
+  $("aiTestCount").value = optionValues.includes(savedCount) ? savedCount : "12";
+  saveAiTestCountSetting();
+}
 
 document.querySelectorAll(".menu-button").forEach((button) => {
   button.addEventListener("click", (event) => {
@@ -1654,18 +2126,19 @@ document.addEventListener("click", (event) => {
   closePopover();
 });
 $("testTab").addEventListener("click", () => {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   state.activeToolTab = "test";
   saveState();
   renderToolTabs();
   codeEditor?.layout();
 });
 $("pdfTab").addEventListener("click", () => {
-  state.activeToolTab = "pdf";
-  saveState();
-  renderToolTabs();
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
+  openProblemPdf();
   codeEditor?.layout();
 });
 $("aiTab").addEventListener("click", () => {
+  if (!canUseExamTools()) return toast(examToolLockedMessage());
   state.activeToolTab = "ai";
   saveState();
   renderToolTabs();
@@ -1702,7 +2175,13 @@ $("pauseExam").addEventListener("click", pauseOrResumeExam);
 $("finishExam").addEventListener("click", () => finishExam(false));
 if ($("openProblem")) $("openProblem").addEventListener("click", openProblemPdf);
 $("expandPdf").addEventListener("click", expandProblemPdf);
+if ($("floatPdf")) $("floatPdf").addEventListener("click", openFloatingStatement);
+$("openSidePdf").addEventListener("click", (event) => { if (!canUseExamTools()) { event.preventDefault(); toast(examToolLockedMessage()); } });
 $("closeStatement").addEventListener("click", closeStatement);
+if ($("closeStatementFloat")) $("closeStatementFloat").addEventListener("click", closeFloatingStatement);
+if ($("dockStatementLeft")) $("dockStatementLeft").addEventListener("click", () => dockFloatingStatement("left"));
+if ($("dockStatementRight")) $("dockStatementRight").addEventListener("click", () => dockFloatingStatement("right"));
+if ($("resetStatementFloat")) $("resetStatementFloat").addEventListener("click", resetFloatingStatement);
 $("runCode").addEventListener("click", () => execute("run"));
 $("submitUva").addEventListener("click", () => execute("submit"));
 $("loadTests").addEventListener("click", loadTests);
@@ -1713,6 +2192,12 @@ $("aiHint").addEventListener("click", () => askAi("hint"));
 $("aiDebug").addEventListener("click", () => askAi("debug"));
 $("aiTranslate").addEventListener("click", () => askAi("translate"));
 $("vimToggle").addEventListener("click", () => setVimMode(!vimMode));
+if ($("themeToggle")) $("themeToggle").addEventListener("click", () => {
+  const next = currentExamTheme() === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_STORAGE_KEY, next);
+  applyExamTheme(next);
+  codeEditor?.layout();
+});
 $("exportRecord").addEventListener("click", exportRecord);
 $("importRecord").addEventListener("click", () => $("importFile").click());
 $("importFile").addEventListener("change", (event) => importRecordFile(event.target.files?.[0]));
@@ -1729,15 +2214,23 @@ $("code").addEventListener("keydown", (event) => {
 $("input").addEventListener("input", saveCurrentBuffers);
 $("expected").addEventListener("input", saveCurrentBuffers);
 $("aiQuestion").addEventListener("input", saveCurrentBuffers);
+if ($("aiHistory")) $("aiHistory").addEventListener("change", (event) => loadAiThread(event.target.value));
+if ($("aiNewChat")) $("aiNewChat").addEventListener("click", startNewAiConversation);
+if ($("aiClearHistory")) $("aiClearHistory").addEventListener("click", () => {
+  if (confirm("確定清除目前題目的 AI 對話紀錄？")) clearCurrentAiHistory();
+});
 $("testSource").addEventListener("change", () => {
   switchTestSource($("testSource").value);
   updateToolPermissions();
 });
+if ($("aiTestCount")) $("aiTestCount").addEventListener("change", saveAiTestCountSetting);
 
 activeIndex = Math.min(Math.max(Number(state.activeIndex || 0), 0), Math.max(state.problems.length - 1, 0));
+initializeFloatingStatementDrag();
 renderLanguages();
 if (!state.problems.length) drawProblems();
 render();
 initializeEditor();
 setInterval(updateTimer, 1000);
+
 
