@@ -12,9 +12,6 @@ let toastTimer = null;
 let toastQueue = [];
 let toastShowing = false;
 const busyActions = new Set();
-const AI_TEST_COUNT_STORAGE_KEY = "pi-oj-ai-test-count";
-const AI_TEST_HISTORY_STORAGE_KEY = "pi-oj-ai-test-history-v1";
-const FLOATING_STATEMENT_STORAGE_KEY = "pi-oj-floating-statement";
 
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
@@ -29,9 +26,7 @@ function applyTheme(theme) {
 }
 
 function currentEditorTheme() {
-  if ($("compilerMode")?.value === "exam" && $("judge")?.value !== "codeforces") {
-    return root.dataset.theme === "dark" ? "scintilla-cpe-dark" : "scintilla-cpe";
-  }
+  if ($("compilerMode")?.value === "exam" && $("judge")?.value !== "codeforces") return "scintilla-cpe";
   return root.dataset.theme === "dark" ? "vs-dark" : "vs";
 }
 
@@ -92,34 +87,6 @@ function defineScintillaTheme() {
       "editor.lineHighlightBorder": "#F0F0F0",
       "editorIndentGuide.background1": "#e6e6e6",
       "editorIndentGuide.activeBackground1": "#bdbdbd",
-    },
-  });
-
-  // 主頁的考試編譯器在深色模式下也跟著整體背景，不再固定白底。
-  monaco.editor.defineTheme("scintilla-cpe-dark", {
-    base: "vs-dark",
-    inherit: true,
-    rules: [
-      {token: "keyword", foreground: "8bd2ff", fontStyle: "bold"},
-      {token: "type", foreground: "8bd2ff", fontStyle: "bold"},
-      {token: "comment", foreground: "7ccf8a", fontStyle: "italic"},
-      {token: "string", foreground: "ffb3de"},
-      {token: "number", foreground: "ffb27a"},
-      {token: "predefined", foreground: "8bd2ff"},
-    ],
-    colors: {
-      "editor.background": "#181f1b",
-      "editor.foreground": "#e7ece8",
-      "editorGutter.background": "#181f1b",
-      "editorLineNumber.foreground": "#94a099",
-      "editorLineNumber.activeForeground": "#e7ece8",
-      "editorCursor.foreground": "#e7ece8",
-      "editor.selectionBackground": "#2f5d4c",
-      "editor.inactiveSelectionBackground": "#263a32",
-      "editor.lineHighlightBackground": "#1d2521",
-      "editor.lineHighlightBorder": "#1d2521",
-      "editorIndentGuide.background1": "#303a34",
-      "editorIndentGuide.activeBackground1": "#52615a",
     },
   });
 }
@@ -384,12 +351,78 @@ function isSavedDefaultTemplate(language, code) {
   return normalized === templates[language] || (legacyTemplateVariants[language] || []).includes(normalized);
 }
 
-function codeForLanguage(language) {
-  if (isSavedDefaultTemplate(language, saved[language])) {
-    saved[language] = templates[language] || "";
+function isKnownTemplateCode(code) {
+  if (typeof code !== "string") return false;
+  const normalized = code.replace(/\n+$/, "");
+  return Object.values(templates).includes(normalized)
+    || Object.values(legacyTemplateVariants).some((variants) => variants.includes(normalized));
+}
+
+function codeLanguageKey(language) {
+  return monacoLanguageModes[language] || language || "text";
+}
+
+function problemKeyForCode(judge = getJudge()) {
+  const value = $("problemId")?.value?.trim() || "";
+  if (!value) return "draft";
+  if (effectiveJudge(judge) === "codeforces") return value.toUpperCase().replace(/[^0-9A-Z]/g, "");
+  return value.replace(/\D/g, "") || "draft";
+}
+
+function codeKeyFor(language, judge = getJudge()) {
+  return `${judge}::${problemKeyForCode(judge)}::${codeLanguageKey(language)}`;
+}
+
+function normalizeSavedCode(key, language) {
+  if (isSavedDefaultTemplate(language, saved[key])) {
+    saved[key] = templates[language] || "";
     localStorage.setItem("pi-oj-code", JSON.stringify(saved));
   }
-  return saved[language] || templates[language] || "";
+}
+
+function findSavedCodeVariant(language, judge = getJudge()) {
+  const problemKey = problemKeyForCode(judge);
+  const languageKey = codeLanguageKey(language);
+  const exactKey = `${judge}::${problemKey}::${languageKey}`;
+  const legacyPrefix = `${judge}::`;
+  const keys = Object.keys(saved || {})
+    .filter((key) => key === exactKey);
+  keys.push(...Object.keys(saved || {})
+    .filter((key) => {
+      const keyLanguage = key.split("::").pop();
+      return key.startsWith(legacyPrefix)
+        && codeLanguageKey(keyLanguage) === languageKey
+        && ["::oj::", "::exam::", "::simple::"].some((part) => key.includes(part));
+    }));
+  for (const key of keys) {
+    const code = saved[key];
+    if (typeof code !== "string" || isSavedDefaultTemplate(language, code) || isKnownTemplateCode(code)) continue;
+    return code;
+  }
+  return null;
+}
+
+function codeForLanguage(language, judge = getJudge(), compilerMode = getCompilerMode(judge)) {
+  const key = codeKeyFor(language, judge);
+  normalizeSavedCode(key, language);
+  if (Object.prototype.hasOwnProperty.call(saved, key) && !isSavedDefaultTemplate(language, saved[key]) && !isKnownTemplateCode(saved[key])) return saved[key] || "";
+
+  const variant = findSavedCodeVariant(language, judge);
+  if (variant !== null) {
+    saved[key] = variant;
+    localStorage.setItem("pi-oj-code", JSON.stringify(saved));
+    return variant;
+  }
+  if (Object.prototype.hasOwnProperty.call(saved, key) && !isKnownTemplateCode(saved[key])) return saved[key] || "";
+
+  // Migration path for code saved before compiler-mode-specific keys existed.
+  normalizeSavedCode(language, language);
+  if (Object.prototype.hasOwnProperty.call(saved, language) && saved[language] && !isSavedDefaultTemplate(language, saved[language])) {
+    saved[key] = saved[language];
+    localStorage.setItem("pi-oj-code", JSON.stringify(saved));
+    return saved[key];
+  }
+  return templates[language] || "";
 }
 
 const languageOptionsByJudge = {
@@ -398,7 +431,6 @@ const languageOptionsByJudge = {
 };
 const examLanguageOptions = [["exam_c_mingw", "C (MinGW GCC 6.3.0)"], ["exam_cpp_mingw", "C++ (MinGW GCC 6.3.0)"], ["exam_java8", "Java (AdoptOpenJDK 8)"], ["exam_java11", "Java (AdoptOpenJDK 11)"], ["exam_py396", "Python (Python 3.9.6)"]];
 const cpeLevelShortLabels = {must:"必考", star1:"★", star2:"★★", star3:"★★★", star4:"★★★★", star5:"★★★★★"};
-const CPE_LEVEL_STORAGE_KEY = "pi-oj-cpe-level";
 const monacoLanguageModes = {uva_c:"c", uva_java:"java", uva_pascal:"pascal", uva_cpp11:"cpp", uva_py3:"python", cf_c11:"c", cf_cpp17:"cpp", cf_cpp20:"cpp", cf_cpp23:"cpp", cf_java21:"java", cf_py313:"python", cf_pypy310:"python", cf_js_v8:"javascript", cf_node:"javascript", cf_rust2021:"rust", cf_rust2024:"rust", cf_go:"go", cf_perl:"perl", cf_php:"php", cf_ruby:"ruby", cf_ocaml:"ocaml", cf_d:"d", exam_c_mingw:"c", exam_cpp_mingw:"cpp", exam_java8:"java", exam_java11:"java", exam_py396:"python"};
 const languageAliases = {cpp:"uva_cpp11", cpp17:"cf_cpp17", cpp20:"cf_cpp20", c:"cf_c11", py:"cf_py313", java:"cf_java21", js:"cf_node"};
 function getCompilerMode(judge = getJudge()) { return judge === "codeforces" ? "oj" : ($("compilerMode")?.value || "oj"); }
@@ -442,26 +474,23 @@ $("judge").value = localStorage.getItem("pi-oj-judge") || "uva";
 $("compilerMode").value = getJudge() === "codeforces" ? "oj" : (localStorage.getItem(`pi-oj-compiler-mode-${getJudge()}`) || "oj");
 let activeLanguage = defaultLanguageForJudge(getJudge(), getCompilerMode());
 renderLanguageOptions(getJudge());
-$("code").value = codeForLanguage(activeLanguage);
-$("aiQuestion").value = savedAiState.question || "";
 $("problemId").value = getJudge() === "cpe"
   ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
   : localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
+let activeCodeKey = codeKeyFor(activeLanguage, getJudge());
+$("code").value = codeForLanguage(activeLanguage);
+$("aiQuestion").value = savedAiState.question || "";
 updateJudgeUi();
 const savedTests = JSON.parse(localStorage.getItem("pi-oj-tests") || "{}");
-const savedAiTestCount = localStorage.getItem(AI_TEST_COUNT_STORAGE_KEY) || "12";
-if ($("aiTestCount")) {
-  const optionValues = [...$("aiTestCount").options].map((option) => option.value);
-  $("aiTestCount").value = optionValues.includes(savedAiTestCount) ? savedAiTestCount : "12";
-  saveAiTestCountSetting();
-}
-if ($("cpeLevel")) {
-  const savedCpeLevel = localStorage.getItem(CPE_LEVEL_STORAGE_KEY);
-  if (savedCpeLevel && [...$("cpeLevel").options].some((option) => option.value === savedCpeLevel)) {
-    $("cpeLevel").value = savedCpeLevel;
-  }
-}
 let activeTestSource = "sample";
+
+function saveCurrentCode() {
+  if (!activeCodeKey) return;
+  const code = getCode();
+  if (isKnownTemplateCode(code) && saved[activeCodeKey] && !isKnownTemplateCode(saved[activeCodeKey])) return;
+  saved[activeCodeKey] = code;
+  localStorage.setItem("pi-oj-code", JSON.stringify(saved));
+}
 
 function ensureCpeStarGroups() {
   if (window.CPE_STAR_GROUPS?.problems) return Promise.resolve(true);
@@ -511,12 +540,13 @@ function renderCpeStarOptions() {
 
 function applyCpeStarProblem(problemId) {
   if (!problemId) return;
+  saveCurrentCode();
   $("problemId").value = problemId;
   localStorage.setItem("pi-oj-problem-id-cpe", problemId);
   localStorage.setItem("pi-oj-problem-id-uva", problemId);
-  if ($("cpeLevel")) localStorage.setItem(CPE_LEVEL_STORAGE_KEY, $("cpeLevel").value);
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge());
+  setCode(codeForLanguage(activeLanguage));
   updateProblemValidation();
-  renderAiHistory();
 }
 
 
@@ -629,6 +659,9 @@ function activateSimpleCompiler(message = "已切換成簡易編譯器。你仍�
     $("compilerMode").value = "simple";
     if (persist) localStorage.setItem(`pi-oj-compiler-mode-${getJudge()}`, "simple");
   }
+  activeLanguage = normalizeLanguage($("language").value, getJudge());
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge(), getCompilerMode());
+  saveCurrentCode();
 
   if (message) toast(message);
 }
@@ -668,24 +701,7 @@ function switchTestSource(source, saveCurrent = true) {
   $("fetchTests").hidden = !["sample", "ai", "custom"].includes(source);
   $("fetchTests").textContent = source === "ai" ? "AI 產生" : source === "custom" ? "AI 算輸出" : "載入";
   $("openUdebug").hidden = !(source === "udebug" && effectiveJudge() === "uva");
-  if ($("aiTestCountLabel")) $("aiTestCountLabel").hidden = source !== "ai";
   localStorage.setItem("pi-oj-test-source", source);
-}
-
-function getAiTestCount() {
-  const raw = Number.parseInt($("aiTestCount")?.value || "12", 10);
-  if (!Number.isFinite(raw)) return 12;
-  return Math.min(100, Math.max(1, raw));
-}
-
-function saveAiTestCountSetting() {
-  if (!$("aiTestCount")) return;
-  localStorage.setItem(AI_TEST_COUNT_STORAGE_KEY, String(getAiTestCount()));
-}
-
-function aiTestCountPrompt(count = getAiTestCount(), attempt = 1) {
-  const retryNote = attempt > 1 ? " This is a retry because the previous response did not match the requested case count; correct the count and use a clearly different stdin." : "";
-  return `Generate exactly ${count} useful local test cases as one combined stdin, with exact expected stdout and a case manifest containing exactly ${count} numbered lines.${retryNote}`;
 }
 
 
@@ -729,36 +745,19 @@ async function fetchSelectedTests() {
       switchSidePanel("ai");
       const pageName = effectiveJudge() === "codeforces" ? "Codeforces 題目頁" : "UVA PDF";
       setAiOutput(`AI \u52a9\u6559\u6b63\u5728\u95b1\u8b80 ${pageName}\uff0c\u4e26\u7522\u751f input/output \u6e2c\u8cc7\u2026`);
-      const targetCount = getAiTestCount();
-      let aiResult = null;
-      let parsed = null;
-      let manifest = {count: null, lines: []};
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        aiResult = await requestAi("tests", {
-          question: aiTestCountPrompt(targetCount, attempt),
-          test_count: targetCount,
-          generation_id: makeAiGenerationId(),
-          previous_tests: recentAiTestSummaries(),
-        });
-        parsed = parseAiGeneratedTest(aiResult.message || "");
-        manifest = parseAiCaseManifest(aiResult.message || "");
-        if (!parsed) break;
-        if (manifest.count === targetCount || attempt === 2) break;
-        setAiOutput(`AI 第 ${attempt} 次未符合目標筆數（宣告 ${manifest.count ?? "未知"} 筆），正在要求重產 ${targetCount} 筆且換一組不同測資…`, false, false);
-      }
+      const aiResult = await requestAi("tests");
       showAiResult(aiResult);
+      const parsed = parseAiGeneratedTest(aiResult.message || "");
       if (!parsed) {
-        throw new Error("AI 回應中找不到完整的 stdin / expected stdout 區塊");
+        throw new Error("AI \u56de\u61c9\u4e2d\u627e\u4e0d\u5230\u5b8c\u6574\u7684 stdin / expected stdout \u5340\u584a");
       }
-      recordAiTestHistory(parsed.input, aiResult.message || "");
       switchSidePanel("test");
-      const countNote = manifest.count !== null && manifest.count !== targetCount ? `（AI 宣告 ${manifest.count} 筆，目標 ${targetCount} 筆）` : "";
       result = {
         status: "FETCHED",
         source,
         input_data: parsed.input,
         expected_output: parsed.expected,
-        message: `已套用 AI 產生的測資${countNote}`,
+        message: "\u5df2\u5957\u7528 AI \u7522\u751f\u7684\u6e2c\u8cc7",
       };
     } else {
       if (!$("input").value.trim()) {
@@ -802,33 +801,6 @@ async function fetchSelectedTests() {
   }
 }
 
-async function loadSampleTestsForCurrentProblem({silent = true} = {}) {
-  const problemId = $("problemId").value;
-  if (!validProblemId(problemId)) return false;
-  try {
-    const queued = await request("/api/tests/fetch", {
-      method: "POST",
-      body: JSON.stringify({judge: effectiveJudge(), problem_id: problemId, source: "sample"}),
-    });
-    const result = await poll(queued.task_id);
-    if (!result || result.status !== "FETCHED") throw new Error(result?.error_log || "題目測資載入失敗");
-    savedTests.sample = {
-      input: result.input_data || "",
-      expected: result.expected_output || "",
-    };
-    localStorage.setItem("pi-oj-tests", JSON.stringify(savedTests));
-    if (activeTestSource === "sample") {
-      $("input").value = savedTests.sample.input;
-      $("expected").value = savedTests.sample.expected;
-    }
-    if (!silent) toast(result.message || "題目範例測資已載入");
-    return true;
-  } catch (error) {
-    if (!silent) toast(error.message);
-    return false;
-  }
-}
-
 async function openProblemPdf() {
   const problemId = $("problemId").value;
   if (!validProblemId(problemId)) {
@@ -844,8 +816,6 @@ async function openProblemPdf() {
   $("pdfTitle").textContent = `${judge === "codeforces" ? "Codeforces" : "UVA"} ${problemId} \u984c\u76ee`;
   $("openPdf").href = problemUrlForJudge(judge, problemId) || pdfUrl;
   $("pdfPane").hidden = false;
-  $("pdfPane").classList.remove("expanded");
-  $("expandPdf").textContent = "放大閱讀";
   switchSidePanel("pdf", false);
   document.querySelector("main").classList.add("pdf-open");
   try {
@@ -853,7 +823,9 @@ async function openProblemPdf() {
       if (currentPdfObjectUrl) URL.revokeObjectURL(currentPdfObjectUrl);
       currentPdfObjectUrl = null;
       $("problemPdf").src = pdfUrl;
-      loadSampleTestsForCurrentProblem({silent: true});
+      $("testSource").value = "sample";
+      switchTestSource("sample");
+      await fetchSelectedTests();
       return;
     }
     const response = await fetch(pdfUrl);
@@ -865,7 +837,9 @@ async function openProblemPdf() {
     if (currentPdfObjectUrl) URL.revokeObjectURL(currentPdfObjectUrl);
     currentPdfObjectUrl = URL.createObjectURL(blob);
     $("problemPdf").src = currentPdfObjectUrl;
-    loadSampleTestsForCurrentProblem({silent: true});
+    $("testSource").value = "sample";
+    switchTestSource("sample");
+    await fetchSelectedTests();
   } catch (error) {
     closeProblemPdf();
     toast(error.message);
@@ -891,109 +865,6 @@ function togglePdfExpand() {
   const expanded = !$("pdfPane").classList.contains("expanded");
   $("pdfPane").classList.toggle("expanded", expanded);
   $("expandPdf").textContent = expanded ? "回到右側" : "放大閱讀";
-}
-
-
-function defaultFloatingRect() {
-  return {left: Math.max(24, Math.floor(window.innerWidth * 0.08)), top: 86, width: Math.min(720, Math.max(460, Math.floor(window.innerWidth * 0.42))), height: Math.min(760, Math.max(420, window.innerHeight - 130))};
-}
-
-function clampFloatingRect(rect) {
-  const minWidth = 360;
-  const minHeight = 260;
-  const width = Math.min(Math.max(Number(rect?.width) || minWidth, minWidth), Math.max(minWidth, window.innerWidth - 24));
-  const height = Math.min(Math.max(Number(rect?.height) || minHeight, minHeight), Math.max(minHeight, window.innerHeight - 24));
-  const left = Math.min(Math.max(Number(rect?.left) || 12, 8), Math.max(8, window.innerWidth - width - 8));
-  const top = Math.min(Math.max(Number(rect?.top) || 12, 8), Math.max(8, window.innerHeight - height - 8));
-  return {left, top, width, height};
-}
-
-function loadFloatingRect() {
-  try {
-    return clampFloatingRect(JSON.parse(localStorage.getItem(FLOATING_STATEMENT_STORAGE_KEY) || "null") || defaultFloatingRect());
-  } catch {
-    return clampFloatingRect(defaultFloatingRect());
-  }
-}
-
-function applyFloatingRect(rect) {
-  const target = $("floatingStatement");
-  if (!target) return;
-  const next = clampFloatingRect(rect);
-  target.style.left = `${next.left}px`;
-  target.style.top = `${next.top}px`;
-  target.style.width = `${next.width}px`;
-  target.style.height = `${next.height}px`;
-}
-
-function saveFloatingRect() {
-  const target = $("floatingStatement");
-  if (!target || target.hidden) return;
-  localStorage.setItem(FLOATING_STATEMENT_STORAGE_KEY, JSON.stringify(clampFloatingRect(target.getBoundingClientRect())));
-}
-
-function openFloatingStatement() {
-  const problemId = $("problemId").value;
-  if (!validProblemId(problemId)) {
-    toast(invalidProblemMessage());
-    return;
-  }
-  const judge = effectiveJudge();
-  const statementId = problemId.trim().toUpperCase().replace(/[^0-9A-Z]/g, "");
-  const url = judge === "codeforces" ? `/api/problems/codeforces/${statementId}/statement` : problemUrlForJudge(judge, problemId);
-  $("floatingStatementTitle").textContent = `${judge === "codeforces" ? "Codeforces" : "UVA"} ${problemId} 題目`;
-  if ($("floatingStatementFrame").getAttribute("src") !== url) $("floatingStatementFrame").src = url;
-  applyFloatingRect(loadFloatingRect());
-  $("floatingStatement").hidden = false;
-  loadSampleTestsForCurrentProblem({silent: true});
-}
-
-function closeFloatingStatement() {
-  saveFloatingRect();
-  $("floatingStatement").hidden = true;
-}
-
-function dockFloatingStatement(side) {
-  const width = Math.min(720, Math.max(420, Math.floor(window.innerWidth * 0.42)));
-  const height = Math.min(window.innerHeight - 96, Math.max(420, Math.floor(window.innerHeight * 0.82)));
-  const top = 76;
-  const left = side === "right" ? window.innerWidth - width - 24 : 24;
-  applyFloatingRect({left, top, width, height});
-  saveFloatingRect();
-}
-
-function resetFloatingStatement() {
-  applyFloatingRect(defaultFloatingRect());
-  saveFloatingRect();
-}
-
-function initializeFloatingStatementDrag() {
-  const panel = $("floatingStatement");
-  const header = $("floatingStatementHeader");
-  const frame = $("floatingStatementFrame");
-  if (!panel || !header) return;
-  let drag = null;
-  header.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button")) return;
-    const rect = panel.getBoundingClientRect();
-    drag = {pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top, width: rect.width, height: rect.height};
-    header.setPointerCapture(event.pointerId);
-    if (frame) frame.style.pointerEvents = "none";
-    event.preventDefault();
-  });
-  header.addEventListener("pointermove", (event) => {
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    applyFloatingRect({left: event.clientX - drag.offsetX, top: event.clientY - drag.offsetY, width: drag.width, height: drag.height});
-  });
-  const endDrag = (event) => {
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    drag = null;
-    if (frame) frame.style.pointerEvents = "";
-    saveFloatingRect();
-  };
-  header.addEventListener("pointerup", endDrag);
-  header.addEventListener("pointercancel", endDrag);
-  panel.addEventListener("mouseup", saveFloatingRect);
 }
 
 function showNextToast() {
@@ -1172,8 +1043,7 @@ async function initializeMonaco() {
     const elapsed = performance.now() - createdAt;
     setTimeout(() => requestAnimationFrame(revealEditor), Math.max(0, 350 - elapsed));
     codeEditor.onDidChangeModelContent(() => {
-      saved[$("language").value] = codeEditor.getValue();
-      localStorage.setItem("pi-oj-code", JSON.stringify(saved));
+      saveCurrentCode();
     });
 
     if (typeof window.define === "function") {
@@ -1468,8 +1338,6 @@ function saveAiState(next = {}) {
     question: $("aiQuestion").value,
     output: savedAiState.output || "",
     isError: Boolean(savedAiState.isError),
-    historyByKey: savedAiState.historyByKey || {},
-    activeThreadByKey: savedAiState.activeThreadByKey || {},
     ...next,
   };
   Object.assign(savedAiState, state);
@@ -1481,188 +1349,7 @@ function setAiOutput(message, isError = false, persist = true) {
   if (persist) saveAiState({output: message || "", isError});
 }
 
-function makeAiId() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `ai-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
 
-function aiContextKey() {
-  const problemId = $("problemId").value.trim();
-  const problemPart = validProblemId(problemId) ? problemId : "general";
-  return `${effectiveJudge()}:${problemPart}`;
-}
-
-
-function loadAiTestHistoryStore() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(AI_TEST_HISTORY_STORAGE_KEY) || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveAiTestHistoryStore(store) {
-  localStorage.setItem(AI_TEST_HISTORY_STORAGE_KEY, JSON.stringify(store));
-}
-
-function textHash(value) {
-  let hash = 2166136261;
-  const text = String(value || "");
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
-}
-
-function compactPreview(value, limit = 900) {
-  return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
-}
-
-function recentAiTestSummaries() {
-  const store = loadAiTestHistoryStore();
-  const items = Array.isArray(store[aiContextKey()]) ? store[aiContextKey()] : [];
-  return items.slice(-5).map((item, index) => `#${index + 1} hash=${item.hash || ""}; ${item.summary || item.preview || ""}`);
-}
-
-function recordAiTestHistory(input, message) {
-  const store = loadAiTestHistoryStore();
-  const key = aiContextKey();
-  const manifest = parseAiCaseManifest(message || "");
-  const item = {
-    hash: textHash(input),
-    summary: `cases=${manifest.count ?? "unknown"}; ${compactPreview(input)}`,
-    createdAt: Date.now(),
-  };
-  const items = Array.isArray(store[key]) ? store[key].filter((old) => old.hash !== item.hash) : [];
-  items.push(item);
-  store[key] = items.slice(-5);
-  saveAiTestHistoryStore(store);
-}
-
-function makeAiGenerationId() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `gen-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function ensureAiStateShape() {
-  if (!savedAiState.historyByKey || typeof savedAiState.historyByKey !== "object") savedAiState.historyByKey = {};
-  if (!savedAiState.activeThreadByKey || typeof savedAiState.activeThreadByKey !== "object") savedAiState.activeThreadByKey = {};
-}
-
-function aiThreadsForCurrentKey() {
-  ensureAiStateShape();
-  const key = aiContextKey();
-  if (!Array.isArray(savedAiState.historyByKey[key])) savedAiState.historyByKey[key] = [];
-  return savedAiState.historyByKey[key];
-}
-
-function aiTitleFrom(value, fallback = "AI 回答") {
-  const text = String(value || "").replace(/[#*_`>\[\]()]/g, "").split("\n").map((line) => line.trim()).find(Boolean) || fallback;
-  return text.length > 36 ? `${text.slice(0, 36)}…` : text;
-}
-
-function activeAiThread() {
-  ensureAiStateShape();
-  const key = aiContextKey();
-  const threads = aiThreadsForCurrentKey();
-  const activeId = savedAiState.activeThreadByKey[key];
-  return threads.find((thread) => thread.id === activeId) || null;
-}
-
-function createAiThread(title = "新對話") {
-  ensureAiStateShape();
-  const key = aiContextKey();
-  const thread = {id: makeAiId(), title, createdAt: Date.now(), updatedAt: Date.now(), messages: [], output: ""};
-  const threads = aiThreadsForCurrentKey();
-  threads.unshift(thread);
-  if (threads.length > 30) threads.length = 30;
-  savedAiState.activeThreadByKey[key] = thread.id;
-  saveAiState();
-  renderAiHistory();
-  return thread;
-}
-
-function renderAiHistory() {
-  if (!$("aiHistory")) return;
-  ensureAiStateShape();
-  const key = aiContextKey();
-  const threads = aiThreadsForCurrentKey();
-  const activeId = savedAiState.activeThreadByKey[key] || "";
-  const options = [];
-  const empty = document.createElement("option");
-  empty.value = "";
-  empty.textContent = threads.length ? "選擇 AI 對話紀錄…" : "尚無 AI 對話紀錄";
-  options.push(empty);
-  for (const thread of threads) {
-    const option = document.createElement("option");
-    option.value = thread.id;
-    const time = thread.updatedAt ? new Date(thread.updatedAt).toLocaleString("zh-TW", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
-    option.textContent = `${thread.title || "AI 回答"}${time ? `｜${time}` : ""}`;
-    options.push(option);
-  }
-  $("aiHistory").replaceChildren(...options);
-  $("aiHistory").value = activeId && threads.some((thread) => thread.id === activeId) ? activeId : "";
-}
-
-function loadAiThread(threadId) {
-  const key = aiContextKey();
-  const thread = aiThreadsForCurrentKey().find((item) => item.id === threadId);
-  if (!thread) return;
-  savedAiState.activeThreadByKey[key] = thread.id;
-  const lastUser = [...(thread.messages || [])].reverse().find((message) => message.role === "user");
-  if (lastUser?.content) $("aiQuestion").value = lastUser.content;
-  setAiOutput(thread.output || "", false);
-  saveAiState();
-  renderAiHistory();
-}
-
-function startNewAiConversation() {
-  ensureAiStateShape();
-  const key = aiContextKey();
-  delete savedAiState.activeThreadByKey[key];
-  $("aiQuestion").value = "";
-  setAiOutput("", false);
-  saveAiState({question: "", output: "", isError: false});
-  renderAiHistory();
-  $("aiQuestion").focus();
-}
-
-function clearCurrentAiHistory() {
-  ensureAiStateShape();
-  const key = aiContextKey();
-  savedAiState.historyByKey[key] = [];
-  delete savedAiState.activeThreadByKey[key];
-  setAiOutput("", false);
-  saveAiState({output: "", isError: false});
-  renderAiHistory();
-}
-
-function aiConversationForRequest(mode) {
-  if (mode !== "ask") return [];
-  const thread = activeAiThread();
-  if (!thread?.messages?.length) return [];
-  return thread.messages.slice(-12).map((message) => ({role: message.role, content: message.content}));
-}
-
-function recordAiResult(result, renderedText, isError = false) {
-  if (!result || result.status === "SE") return;
-  const mode = result.mode || "ask";
-  const modeNames = {hint: "AI 提示", debug: "AI 除錯", translate: "AI 翻譯", tests: "AI 測資", expected: "AI 輸出計算", ask: "AI 回答"};
-  const prompt = $("aiQuestion").value.trim() || modeNames[mode] || "AI 回答";
-  let thread = activeAiThread();
-  if (!thread) thread = createAiThread(aiTitleFrom(prompt || result.message, modeNames[mode] || "AI 回答"));
-  if (!thread.title || thread.title === "新對話") thread.title = aiTitleFrom(prompt || result.message, modeNames[mode] || "AI 回答");
-  thread.messages = Array.isArray(thread.messages) ? thread.messages : [];
-  thread.messages.push({role: "user", content: prompt, mode, createdAt: Date.now()});
-  thread.messages.push({role: "assistant", content: result.message || result.error_log || "", mode, createdAt: Date.now()});
-  if (thread.messages.length > 30) thread.messages = thread.messages.slice(-30);
-  thread.output = renderedText || result.message || "";
-  thread.updatedAt = Date.now();
-  saveAiState({output: renderedText || "", isError});
-  renderAiHistory();
-}
 
 function parseAiGeneratedTest(message) {
   const inputMatch = message.match(/(?:^|\n)\s*(?:stdin|input)\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
@@ -1672,15 +1359,6 @@ function parseAiGeneratedTest(message) {
     input: inputMatch[1].replace(/\n$/, ""),
     expected: expectedMatch[1].replace(/\n$/, ""),
   };
-}
-
-
-function parseAiCaseManifest(message) {
-  const match = String(message || "").match(/(?:^|\n)\s*case\s+manifest\s*:\s*```(?:text)?\s*\n([\s\S]*?)```/i);
-  if (!match) return {count: null, lines: []};
-  const lines = match[1].split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const numbered = lines.filter((line) => /^\d+[.)、]/.test(line));
-  return {count: numbered.length || lines.length, lines};
 }
 
 function parseAiExpectedOutput(message) {
@@ -1696,7 +1374,7 @@ function shouldAttachProblemContextForAsk() {
   return /(\bthis\b|current|problem|uva|codeforces|wa|wrong answer|tle|re|ce|debug|output|stdout|stdin|sample|test|case|code|\u9019\u984c|\u984c\u76ee|\u76ee\u524d|\u9019\u4efd|\u7a0b\u5f0f|\u7a0b\u5f0f\u78bc|\u6e2c\u8cc7|\u8f38\u5165|\u8f38\u51fa|\u932f|\u9664\u932f|\u70ba\u4ec0\u9ebc\u932f)/i.test(question);
 }
 
-async function requestAi(mode, extra = {}) {
+async function requestAi(mode) {
   const result = lastRunResult || {};
   const isCustomAsk = mode === "ask";
   const attachProblem = !isCustomAsk || shouldAttachProblemContextForAsk();
@@ -1711,26 +1389,19 @@ async function requestAi(mode, extra = {}) {
     stdout: attachProblem ? (result.stdout || "") : "",
     error_log: attachProblem ? (result.error_log || "") : "",
     verdict: attachProblem ? (result.verdict || result.status || "") : "",
-    question: extra.question ?? (mode === "tests" ? aiTestCountPrompt() : $("aiQuestion").value),
-    conversation: extra.conversation ?? aiConversationForRequest(mode),
-    test_count: extra.test_count ?? getAiTestCount(),
-    generation_id: extra.generation_id || "",
-    previous_tests: extra.previous_tests || [],
+    question: $("aiQuestion").value,
   })});
   return poll(queued.task_id);
 }
 
-function showAiResult(result, persistHistory = true) {
-  const aiModeNames = {hint: "AI 提示", debug: "AI 除錯", translate: "AI 翻譯", tests: "AI 測資", expected: "AI 輸出計算", ask: "AI 回答"};
-  const title = aiModeNames[result.mode] || "AI 回答";
+function showAiResult(result) {
+  const aiModeNames = {hint: "AI \u63d0\u793a", debug: "AI \u9664\u932f", translate: "AI \u7ffb\u8b6f", tests: "AI \u6e2c\u8cc7", expected: "AI \u8f38\u51fa\u8a08\u7b97", ask: "AI \u56de\u7b54"};
+  const title = aiModeNames[result.mode] || "AI \u56de\u7b54";
   const meta = [result.provider, result.model].filter(Boolean).join(" / ");
   const parts = [`# ${title}${meta ? ` (${meta})` : ""}`];
   if (result.message) parts.push(result.message);
-  if (result.error_log) parts.push("error:\n```text\n" + result.error_log + "\n```");
-  const rendered = parts.join("\n\n") || JSON.stringify(result, null, 2);
-  const isError = result.status === "SE";
-  setAiOutput(rendered, isError);
-  if (persistHistory) recordAiResult(result, rendered, isError);
+  if (result.error_log) parts.push(`error:\n\`\`\`text\n${result.error_log}\n\`\`\``);
+  setAiOutput(parts.join("\n\n") || JSON.stringify(result, null, 2), result.status === "SE");
 }
 
 async function askAi(mode) {
@@ -1912,10 +1583,11 @@ $("testTab").addEventListener("click", () => switchSidePanel("test"));
 $("pdfTab").addEventListener("click", openProblemPdf);
 $("aiTab").addEventListener("click", () => switchSidePanel("ai"));
 $("language").addEventListener("change", async (event) => {
-  saved[activeLanguage] = getCode();
+  saveCurrentCode();
   activeLanguage = normalizeLanguage(event.target.value, getJudge());
   event.target.value = activeLanguage;
-  localStorage.setItem(languageStorageKey(getJudge()), activeLanguage);
+  localStorage.setItem(languageStorageKey(getJudge(), getCompilerMode()), activeLanguage);
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge(), getCompilerMode());
   setCode(codeForLanguage(activeLanguage));
   if (codeEditor && window.monaco) {
     await loadMonacoContribution(currentLanguageMode());
@@ -1925,11 +1597,18 @@ $("language").addEventListener("change", async (event) => {
   clearDiagnostics();
 });
 $("compilerMode").addEventListener("change", async () => {
-  saved[activeLanguage] = getCode();
+  const previousLanguage = activeLanguage;
+  const previousCode = getCode();
+  saveCurrentCode();
   if (getJudge() === "codeforces") $("compilerMode").value = "oj";
   localStorage.setItem(`pi-oj-compiler-mode-${getJudge()}`, getCompilerMode());
   renderLanguageOptions(getJudge());
-  setCode(codeForLanguage(activeLanguage));
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge(), getCompilerMode());
+  const nextCode = codeForLanguage(activeLanguage);
+  const sameLanguageFamily = codeLanguageKey(previousLanguage) === codeLanguageKey(activeLanguage);
+  const shouldCarryCode = sameLanguageFamily && previousCode && !isSavedDefaultTemplate(previousLanguage, previousCode) && isSavedDefaultTemplate(activeLanguage, nextCode);
+  setCode(shouldCarryCode ? previousCode : nextCode);
+  if (shouldCarryCode) saveCurrentCode();
   if (getCompilerMode() === "simple") {
     activateSimpleCompiler("已切換成簡易編譯器。你仍然可以正常寫程式與執行測試。", false);
   } else if (window.monaco || codeEditor) {
@@ -1940,12 +1619,16 @@ $("compilerMode").addEventListener("change", async () => {
   clearDiagnostics();
 });
 $("testSource").addEventListener("change", (event) => switchTestSource(event.target.value));
-if ($("aiTestCount")) $("aiTestCount").addEventListener("change", saveAiTestCountSetting);
 $("judge").addEventListener("change", async () => {
-  saved[activeLanguage] = getCode();
+  saveCurrentCode();
   localStorage.setItem("pi-oj-judge", getJudge());
   $("compilerMode").value = getJudge() === "codeforces" ? "oj" : (localStorage.getItem(`pi-oj-compiler-mode-${getJudge()}`) || "oj");
   renderLanguageOptions(getJudge());
+  $("problemId").value = getJudge() === "cpe"
+    ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
+    : localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
+  updateJudgeUi();
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge());
   setCode(codeForLanguage(activeLanguage));
   if (getCompilerMode() === "simple") {
     activateSimpleCompiler(null, false);
@@ -1954,32 +1637,24 @@ $("judge").addEventListener("change", async () => {
   } else {
     await initializeMonaco();
   }
-  $("problemId").value = getJudge() === "cpe"
-    ? localStorage.getItem("pi-oj-problem-id-cpe") || ""
-    : localStorage.getItem(`pi-oj-problem-id-${getJudge()}`) || "";
-  updateJudgeUi();
   switchTestSource($("testSource").value);
-  renderAiHistory();
 });
 $("problemId").addEventListener("input", (event) => {
+  saveCurrentCode();
   localStorage.setItem(`pi-oj-problem-id-${getJudge()}`, event.target.value.trim());
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge());
   updateProblemValidation();
-  renderAiHistory();
 });
-$("cpeLevel").addEventListener("change", () => {
-  localStorage.setItem(CPE_LEVEL_STORAGE_KEY, $("cpeLevel").value);
-  renderCpeStarOptions();
+$("problemId").addEventListener("change", () => {
+  activeCodeKey = codeKeyFor(activeLanguage, getJudge());
+  setCode(codeForLanguage(activeLanguage));
 });
+$("cpeLevel").addEventListener("change", () => renderCpeStarOptions());
 $("cpeStar").addEventListener("change", (event) => applyCpeStarProblem(event.target.value));
 $("fetchTests").addEventListener("click", fetchSelectedTests);
 $("input").addEventListener("input", saveActiveTest);
 $("expected").addEventListener("input", saveActiveTest);
 $("aiQuestion").addEventListener("input", () => saveAiState());
-if ($("aiHistory")) $("aiHistory").addEventListener("change", (event) => loadAiThread(event.target.value));
-if ($("aiNewChat")) $("aiNewChat").addEventListener("click", startNewAiConversation);
-if ($("aiClearHistory")) $("aiClearHistory").addEventListener("click", () => {
-  if (confirm("確定清除目前題目的 AI 對話紀錄？")) clearCurrentAiHistory();
-});
 $("openUdebug").addEventListener("click", () => {
   const problemId = $("problemId").value;
   if (!validProblemId(problemId)) {
@@ -1989,8 +1664,7 @@ $("openUdebug").addEventListener("click", () => {
   window.open(`https://www.udebug.com/UVa/${problemId}`, "_blank", "noopener,noreferrer");
 });
 $("code").addEventListener("input", () => {
-  saved[$("language").value] = $("code").value;
-  localStorage.setItem("pi-oj-code", JSON.stringify(saved));
+  saveCurrentCode();
 });
 $("code").addEventListener("keydown", (event) => {
   if (event.key === "Tab") {
@@ -2009,26 +1683,18 @@ $("uva").addEventListener("click", () => execute("uva"));
 $("vimToggle").addEventListener("click", () => setVimMode(!vimMode));
 if ($("pdfToggle")) $("pdfToggle").addEventListener("click", openProblemPdf);
 $("expandPdf").addEventListener("click", togglePdfExpand);
-if ($("floatPdf")) $("floatPdf").addEventListener("click", openFloatingStatement);
-if ($("closePdf")) $("closePdf").addEventListener("click", closeProblemPdf);
-if ($("closeStatementFloat")) $("closeStatementFloat").addEventListener("click", closeFloatingStatement);
-if ($("dockStatementLeft")) $("dockStatementLeft").addEventListener("click", () => dockFloatingStatement("left"));
-if ($("dockStatementRight")) $("dockStatementRight").addEventListener("click", () => dockFloatingStatement("right"));
-if ($("resetStatementFloat")) $("resetStatementFloat").addEventListener("click", resetFloatingStatement);
+$("closePdf").addEventListener("click", closeProblemPdf);
 $("themeToggle").addEventListener("click", () => {
   const next = root.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next);
   localStorage.setItem("pi-oj-theme", next);
 });
 
-initializeFloatingStatementDrag();
-
 if (savedAiState.output) {
   setAiOutput(savedAiState.output, Boolean(savedAiState.isError), false);
 } else {
   setAiOutput("", false, false);
 }
-renderAiHistory();
 
 renderCpeStarOptions();
 ensureCpeStarGroups().then((loaded) => {

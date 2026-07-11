@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="preload" href="/static/vendor/monaco/vs/loader.js?v=0.55.1" as="script">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=0.16.22">
-  <link rel="stylesheet" href="/static/cpe-exam.css?v=22">
+  <link rel="stylesheet" href="/static/cpe-exam.css?v=20">
 </head>
 <body>
   <header>
@@ -24,10 +24,6 @@
     </nav>
     <div class="header-actions">
       <span id="timer" class="timer">03:00:00</span>
-      <button id="themeToggle" class="theme-toggle" type="button" aria-label="切換黑色模式">
-        <span id="themeIcon" aria-hidden="true">☾</span>
-        <span id="themeLabel">黑色</span>
-      </button>
       <button id="importRecord" type="button">匯入紀錄</button>
       <button id="exportRecord" type="button">匯出紀錄</button>
       <input id="importFile" type="file" accept="application/json,.json" hidden>
@@ -73,6 +69,24 @@
 
     <section id="popoverProblems" class="popover-panel problems-popover" hidden>
       <div class="panel-title">題目列表</div>
+      <div class="custom-problem-form" aria-label="替換題目">
+        <select id="replaceMode" title="替換方式">
+          <option value="manual">指定 UVA</option>
+          <option value="random">隨機星等</option>
+        </select>
+        <select id="customProblemLevel" title="題目分類">
+          <option value="custom">自訂</option>
+          <option value="must">必考</option>
+          <option value="star1">★</option>
+          <option value="star2">★★</option>
+          <option value="star3">★★★</option>
+          <option value="star4">★★★★</option>
+          <option value="star5">★★★★★</option>
+        </select>
+        <input id="customProblemId" class="manual-replace-field" inputmode="numeric" maxlength="8" placeholder="UVA 題號">
+        <input id="customProblemTitle" class="manual-replace-field" maxlength="80" placeholder="題名（可空白）">
+        <button id="replaceCustomProblem" type="button">替換選中</button>
+      </div>
       <div id="problemList" class="problem-list"></div>
     </section>
 
@@ -128,18 +142,6 @@
               <option value="custom">自訂</option>
             </select>
           </label>
-          <label id="aiTestCountLabel" class="ai-test-count" hidden>AI 筆數
-            <select id="aiTestCount">
-              <option value="3">3 筆（小量）</option>
-              <option value="5">5 筆</option>
-              <option value="10">10 筆</option>
-              <option value="12" selected>12 筆（標準）</option>
-              <option value="20">20 筆（大量）</option>
-              <option value="30">30 筆（特大）</option>
-              <option value="50">50 筆（壓力）</option>
-              <option value="100">100 筆（極限）</option>
-            </select>
-          </label>
           <button id="loadTests" type="button">載入</button>
           <button id="openUdebug" type="button">uDebug</button>
           <button id="aiExpected" type="button">AI 算輸出</button>
@@ -175,41 +177,17 @@
           </span>
         </div>
         <textarea id="aiQuestion" class="ai-question" maxlength="4000" placeholder="問 AI，例如：這題可以用 BFS 嗎？"></textarea>
-        <div class="ai-history-bar">
-          <div class="ai-history-title">
-            <strong>本題對話紀錄</strong>
-            <span>可切換前幾次回答，或建立新的連續對話</span>
-          </div>
-          <select id="aiHistory" aria-label="AI 對話紀錄"></select>
-          <div class="ai-history-actions">
-            <button id="aiNewChat" type="button">新對話</button>
-            <button id="aiClearHistory" type="button">清除本題紀錄</button>
-          </div>
-        </div>
         <div id="aiOutput" class="ai-output ai-readable">AI 回答會顯示在這裡。</div>
       </section>
     </aside>
   </main>
-
-  <div id="floatingStatement" class="floating-statement" hidden>
-    <div id="floatingStatementHeader" class="floating-statement-header">
-      <strong id="floatingStatementTitle">題目 PDF</strong>
-      <div class="floating-statement-actions">
-        <button id="dockStatementLeft" type="button">靠左</button>
-        <button id="dockStatementRight" type="button">靠右</button>
-        <button id="resetStatementFloat" type="button">重置</button>
-        <button id="closeStatementFloat" type="button">關閉</button>
-      </div>
-    </div>
-    <iframe id="floatingStatementFrame" title="浮動題目 PDF"></iframe>
-  </div>
 
   <div id="statementPane" class="statement-pane" hidden>
     <div class="statement-toolbar">
       <strong id="statementTitle">題目 PDF</strong>
       <button id="closeStatement" type="button">關閉</button>
     </div>
-    <iframe id="statementFrame" title="題目 PDF"></iframe>
+    <iframe id="statementFrame" title="題目 PDF" sandbox="allow-same-origin"></iframe>
   </div>
 
   <div id="toast" role="status"></div>
@@ -217,8 +195,7 @@
   <script src="/static/vendor/marked.umd.js?v=15.0.12"></script>
   <script src="/static/vendor/katex/katex.min.js?v=0.16.22"></script>
   <script src="/static/vendor/katex/auto-render.min.js?v=0.16.22"></script>
-  <script src="/static/cpe-exam.js?v=39"></script>
+  <script src="/static/cpe-exam.js?v=38"></script>
 </body>
 </html>
-
 

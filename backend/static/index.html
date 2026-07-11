@@ -8,7 +8,7 @@
   <link rel="preload" href="/static/vendor/monaco/vs/loader.js?v=0.55.1" as="script">
   <link rel="prefetch" href="/static/vendor/monaco/vs/editor/editor.main.js">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=0.16.22">
-  <link rel="stylesheet" href="/static/style.css?v=36">
+  <link rel="stylesheet" href="/static/style.css?v=35">
 </head>
 <body>
   <header>
@@ -97,18 +97,6 @@
               <option value="custom">自訂</option>
             </select>
           </label>
-          <label id="aiTestCountLabel" class="ai-test-count" hidden>AI 筆數
-            <select id="aiTestCount">
-              <option value="3">3 筆（小量）</option>
-              <option value="5">5 筆</option>
-              <option value="10">10 筆</option>
-              <option value="12" selected>12 筆（標準）</option>
-              <option value="20">20 筆（大量）</option>
-              <option value="30">30 筆（特大）</option>
-              <option value="50">50 筆（壓力）</option>
-              <option value="100">100 筆（極限）</option>
-            </select>
-          </label>
           <button id="fetchTests" type="button">載入</button>
           <button id="openUdebug" type="button" hidden>開啟 uDebug</button>
         </div>
@@ -144,52 +132,27 @@
           </div>
         </div>
         <textarea id="aiQuestion" maxlength="4000" placeholder="問 AI，例如：Prim 演算法是什麼？給我模板。"></textarea>
-        <div class="ai-history-bar">
-          <div class="ai-history-title">
-            <strong>本題對話紀錄</strong>
-            <span>可切換前幾次回答，或建立新的連續對話</span>
-          </div>
-          <select id="aiHistory" aria-label="AI 對話紀錄"></select>
-          <div class="ai-history-actions">
-            <button id="aiNewChat" type="button">新對話</button>
-            <button id="aiClearHistory" type="button">清除本題紀錄</button>
-          </div>
-        </div>
         <div id="aiOutput" class="ai-output ai-readable">AI 回答會顯示在這裡</div>
       </section>
 
-      <section id="pdfPane" class="side-panel pdf-pane" role="tabpanel" aria-labelledby="pdfTab" hidden>
+      <div id="pdfPane" class="pdf-pane" hidden>
         <div class="pdf-toolbar">
           <strong id="pdfTitle">題目 PDF</strong>
           <button id="expandPdf" type="button">放大閱讀</button>
-          <button id="floatPdf" type="button">浮動題目</button>
           <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
+          <button id="closePdf" type="button">關閉</button>
         </div>
-        <iframe id="problemPdf" title="題目 PDF"></iframe>
-      </section>
+        <iframe id="problemPdf" title="題目 PDF" sandbox="allow-same-origin"></iframe>
+      </div>
     </aside>
   </main>
-
-  <div id="floatingStatement" class="floating-statement" hidden>
-    <div id="floatingStatementHeader" class="floating-statement-header">
-      <strong id="floatingStatementTitle">題目 PDF</strong>
-      <div class="floating-statement-actions">
-        <button id="dockStatementLeft" type="button">靠左</button>
-        <button id="dockStatementRight" type="button">靠右</button>
-        <button id="resetStatementFloat" type="button">重置</button>
-        <button id="closeStatementFloat" type="button">關閉</button>
-      </div>
-    </div>
-    <iframe id="floatingStatementFrame" title="浮動題目 PDF"></iframe>
-  </div>
 
   <div id="toast" role="status"></div>
   <script src="/static/vendor/marked.umd.js?v=15.0.12"></script>
   <script src="/static/vendor/katex/katex.min.js?v=0.16.22"></script>
   <script src="/static/vendor/katex/auto-render.min.js?v=0.16.22"></script>
   <script src="/static/cpe-stars.js?v=5"></script>
-  <script src="/static/app.js?v=82"></script>
+  <script src="/static/app.js?v=81"></script>
 </body>
 </html>
-
 
