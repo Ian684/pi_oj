@@ -368,10 +368,10 @@ aside {
 #aiPanel[hidden] { display: none; }
 
 .pdf-pane {
+  position: relative;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -383,7 +383,6 @@ aside {
   position: fixed;
   inset: 18px;
   z-index: 60;
-  display: grid;
   box-shadow: 0 24px 80px rgb(0 0 0 / 24%);
 }
 
@@ -410,10 +409,58 @@ aside {
 
 #problemPdf {
   width: 100%;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   border: 0;
   background: #fff;
+}
+
+.pdf-fallback {
+  position: absolute;
+  inset: 48px 0 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  text-align: center;
+}
+
+.pdf-fallback div {
+  max-width: 360px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
+.pdf-fallback strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.pdf-fallback p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pdf-fallback a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0 12px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .source-bar {
@@ -428,7 +475,6 @@ aside {
   box-shadow: var(--shadow);
 }
 .source-bar label { flex: 1; min-width: 130px; }
-.source-bar label.ai-test-count { flex: 0 0 140px; }
 .source-bar select { width: 100%; }
 .source-bar button { flex: none; }
 
@@ -511,54 +557,8 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
   color: var(--muted);
 }
 
-.ai-history-bar {
-  flex: none;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  padding: 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-soft);
-}
-
-.ai-history-title {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--muted);
-}
-
-.ai-history-title strong {
-  color: var(--text);
-  font-size: 12px;
-}
-
-.ai-history-title span {
-  font-size: 11px;
-  text-align: right;
-}
-
-.ai-history-bar select {
-  min-width: 0;
-}
-
-.ai-history-actions {
-  display: flex;
-  gap: 7px;
-  white-space: nowrap;
-}
-
-.ai-history-bar button {
-  height: 31px;
-  padding: 0 8px;
-  font-size: 11px;
-}
-
 .ai-output {
   flex: 1;
-  min-width: 0;
   min-height: 150px;
   overflow: auto;
   padding: 18px;
@@ -679,21 +679,10 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
   margin: 12px 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 12px;
   background: var(--surface-soft);
   font: 13px/1.55 "Cascadia Code", Consolas, monospace;
-  white-space: pre;
-}
-
-.ai-readable pre code {
-  display: block;
-  min-width: max-content;
-  border: 0;
-  background: transparent;
-  padding: 0;
   white-space: pre;
 }
 
@@ -826,77 +815,5 @@ pre { overflow: auto; margin: 0; padding: 13px; white-space: pre-wrap; font: 13p
   aside { min-height: 0; }
   main.pdf-open { grid-template-columns: 1fr; }
   button.primary { margin-left: 0; }
-}
-
-
-.ai-test-count-custom {
-  margin-top: 5px;
-  width: 100%;
-  height: 30px;
-  font-size: 12px;
-}
-
-.floating-statement {
-  position: fixed;
-  z-index: 85;
-  left: 84px;
-  top: 84px;
-  width: 720px;
-  height: 720px;
-  min-width: 360px;
-  min-height: 260px;
-  resize: both;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 26%);
-}
-
-.floating-statement[hidden] { display: none; }
-
-.floating-statement-header {
-  height: 44px;
-  min-height: 44px;
-  padding: 0 9px 0 13px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-soft);
-  cursor: move;
-  user-select: none;
-}
-
-.floating-statement-header strong {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.floating-statement-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  white-space: nowrap;
-}
-
-.floating-statement-actions button {
-  height: 30px;
-  padding: 0 8px;
-  font-size: 11px;
-}
-
-#floatingStatementFrame {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
-  border: 0;
-  background: #fff;
 }
 

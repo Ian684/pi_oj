@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="preload" href="/static/vendor/monaco/vs/loader.js?v=0.55.1" as="script">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=0.16.22">
-  <link rel="stylesheet" href="/static/cpe-exam.css?v=20">
+  <link rel="stylesheet" href="/static/cpe-exam.css?v=21">
 </head>
 <body>
   <header>
@@ -185,9 +185,17 @@
   <div id="statementPane" class="statement-pane" hidden>
     <div class="statement-toolbar">
       <strong id="statementTitle">題目 PDF</strong>
+      <a id="statementOpenPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
       <button id="closeStatement" type="button">關閉</button>
     </div>
-    <iframe id="statementFrame" title="題目 PDF" sandbox="allow-same-origin"></iframe>
+    <iframe id="statementFrame" title="題目 PDF"></iframe>
+    <div id="statementPdfFallback" class="pdf-fallback" hidden>
+      <div>
+        <strong>Edge 封鎖了內嵌 PDF</strong>
+        <p>題目可以正常開啟，但 Edge 有時會擋住 iframe 內的 PDF viewer。</p>
+        <a id="statementFallbackOpenPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟題目</a>
+      </div>
+    </div>
   </div>
 
   <div id="toast" role="status"></div>
@@ -195,7 +203,7 @@
   <script src="/static/vendor/marked.umd.js?v=15.0.12"></script>
   <script src="/static/vendor/katex/katex.min.js?v=0.16.22"></script>
   <script src="/static/vendor/katex/auto-render.min.js?v=0.16.22"></script>
-  <script src="/static/cpe-exam.js?v=38"></script>
+  <script src="/static/cpe-exam.js?v=39"></script>
 </body>
 </html>
 

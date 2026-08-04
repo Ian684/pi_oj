@@ -512,6 +512,7 @@ main {
 #aiPanel[hidden] { display: none; }
 
 #pdfPanel {
+  position: relative;
   min-height: 0;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -559,6 +560,58 @@ main {
   min-height: 0;
   border: 0;
   background: var(--surface);
+}
+
+.pdf-fallback {
+  position: absolute;
+  inset: 40px 0 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  text-align: center;
+}
+
+.statement-pane .pdf-fallback {
+  inset: 48px 0 0;
+}
+
+.pdf-fallback div {
+  max-width: 360px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
+.pdf-fallback strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.pdf-fallback p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pdf-fallback a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0 12px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .source-bar {
@@ -764,9 +817,19 @@ main {
   padding: 0 14px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-soft);
+}
+
+.statement-toolbar strong { margin-right: auto; }
+
+.statement-toolbar a {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 #statementFrame {

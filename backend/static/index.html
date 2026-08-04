@@ -8,7 +8,7 @@
   <link rel="preload" href="/static/vendor/monaco/vs/loader.js?v=0.55.1" as="script">
   <link rel="prefetch" href="/static/vendor/monaco/vs/editor/editor.main.js">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=0.16.22">
-  <link rel="stylesheet" href="/static/style.css?v=35">
+  <link rel="stylesheet" href="/static/style.css?v=37">
 </head>
 <body>
   <header>
@@ -142,7 +142,14 @@
           <a id="openPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
           <button id="closePdf" type="button">關閉</button>
         </div>
-        <iframe id="problemPdf" title="題目 PDF" sandbox="allow-same-origin"></iframe>
+        <iframe id="problemPdf" title="題目 PDF"></iframe>
+        <div id="pdfFallback" class="pdf-fallback" hidden>
+          <div>
+            <strong>Edge 封鎖了內嵌 PDF</strong>
+            <p>題目檔案已載入，但 Microsoft Edge 有時會擋 iframe 內的 PDF viewer。請用新視窗開啟。</p>
+            <a id="fallbackOpenPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟題目</a>
+          </div>
+        </div>
       </div>
     </aside>
   </main>
@@ -152,7 +159,7 @@
   <script src="/static/vendor/katex/katex.min.js?v=0.16.22"></script>
   <script src="/static/vendor/katex/auto-render.min.js?v=0.16.22"></script>
   <script src="/static/cpe-stars.js?v=5"></script>
-  <script src="/static/app.js?v=81"></script>
+  <script src="/static/app.js?v=83"></script>
 </body>
 </html>
 

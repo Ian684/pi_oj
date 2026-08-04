@@ -472,6 +472,9 @@ const saved = JSON.parse(localStorage.getItem("pi-oj-code") || "{}");
 const savedAiState = JSON.parse(localStorage.getItem("pi-oj-ai") || "{}");
 $("judge").value = localStorage.getItem("pi-oj-judge") || "uva";
 $("compilerMode").value = getJudge() === "codeforces" ? "oj" : (localStorage.getItem(`pi-oj-compiler-mode-${getJudge()}`) || "oj");
+if ($("cpeLevel") && localStorage.getItem("pi-oj-cpe-level")) {
+  $("cpeLevel").value = localStorage.getItem("pi-oj-cpe-level");
+}
 let activeLanguage = defaultLanguageForJudge(getJudge(), getCompilerMode());
 renderLanguageOptions(getJudge());
 $("problemId").value = getJudge() === "cpe"
@@ -509,6 +512,19 @@ function renderCpeStarOptions() {
   const levelSelect = $("cpeLevel");
   if (!select) return;
   const groups = window.CPE_STAR_GROUPS || {labels: {}, problems: {}};
+  const savedCpeProblem = localStorage.getItem("pi-oj-problem-id-cpe") || "";
+  const savedCpeLevel = localStorage.getItem("pi-oj-cpe-level") || "";
+  if (levelSelect && savedCpeLevel && Array.from(levelSelect.options).some((option) => option.value === savedCpeLevel)) {
+    levelSelect.value = savedCpeLevel;
+  }
+  if (levelSelect && savedCpeProblem && !groups.problems?.[levelSelect.value]?.some((problem) => String(problem.id) === savedCpeProblem)) {
+    const matchedLevel = Object.entries(groups.problems || {})
+      .find(([, problems]) => problems.some((problem) => String(problem.id) === savedCpeProblem))?.[0];
+    if (matchedLevel && Array.from(levelSelect.options).some((option) => option.value === matchedLevel)) {
+      levelSelect.value = matchedLevel;
+      localStorage.setItem("pi-oj-cpe-level", matchedLevel);
+    }
+  }
   const level = levelSelect?.value || "must";
   const problems = groups.problems?.[level] || [];
   select.replaceChildren();
@@ -523,7 +539,6 @@ function renderCpeStarOptions() {
     option.title = option.textContent;
     select.appendChild(option);
   }
-  const savedCpeProblem = localStorage.getItem("pi-oj-problem-id-cpe") || "";
   if (savedCpeProblem && problems.some((problem) => String(problem.id) === savedCpeProblem)) {
     select.value = savedCpeProblem;
   }
@@ -542,6 +557,7 @@ function applyCpeStarProblem(problemId) {
   if (!problemId) return;
   saveCurrentCode();
   $("problemId").value = problemId;
+  localStorage.setItem("pi-oj-cpe-level", $("cpeLevel")?.value || "must");
   localStorage.setItem("pi-oj-problem-id-cpe", problemId);
   localStorage.setItem("pi-oj-problem-id-uva", problemId);
   activeCodeKey = codeKeyFor(activeLanguage, getJudge());
@@ -801,6 +817,27 @@ async function fetchSelectedTests() {
   }
 }
 
+function showPdfFallback(url) {
+  if ($("fallbackOpenPdf")) $("fallbackOpenPdf").href = url || $("openPdf").href || "#";
+  if ($("pdfFallback")) $("pdfFallback").hidden = false;
+}
+
+function armPdfFallback(url) {
+  const frame = $("problemPdf");
+  if (!frame) return;
+  frame.onload = () => {
+    try {
+      const text = frame.contentDocument?.body?.innerText || "";
+      if (/edge.*blocked|blocked.*edge|microsoft edge.*\u5c01\u9396|\u5df2\u5c01\u9396|\u5c01\u9396\u6b64\u9801\u9762/i.test(text)) {
+        showPdfFallback(url);
+      }
+    } catch {
+      // PDF viewer normally is not readable from JS. In that case, do nothing:
+      // the toolbar still provides "新視窗開啟" as a manual fallback.
+    }
+  };
+}
+
 async function openProblemPdf() {
   const problemId = $("problemId").value;
   if (!validProblemId(problemId)) {
@@ -815,6 +852,8 @@ async function openProblemPdf() {
   button.disabled = true;
   $("pdfTitle").textContent = `${judge === "codeforces" ? "Codeforces" : "UVA"} ${problemId} \u984c\u76ee`;
   $("openPdf").href = problemUrlForJudge(judge, problemId) || pdfUrl;
+  if ($("fallbackOpenPdf")) $("fallbackOpenPdf").href = $("openPdf").href;
+  if ($("pdfFallback")) $("pdfFallback").hidden = true;
   $("pdfPane").hidden = false;
   switchSidePanel("pdf", false);
   document.querySelector("main").classList.add("pdf-open");
@@ -823,6 +862,7 @@ async function openProblemPdf() {
       if (currentPdfObjectUrl) URL.revokeObjectURL(currentPdfObjectUrl);
       currentPdfObjectUrl = null;
       $("problemPdf").src = pdfUrl;
+      armPdfFallback($("openPdf").href);
       $("testSource").value = "sample";
       switchTestSource("sample");
       await fetchSelectedTests();
@@ -833,10 +873,11 @@ async function openProblemPdf() {
       const detail = await response.json().catch(() => ({}));
       throw new Error(detail.detail || `PDF \u8f09\u5165\u5931\u6557\uff08HTTP ${response.status}\uff09`);
     }
-    const blob = await response.blob();
+    await response.blob();
     if (currentPdfObjectUrl) URL.revokeObjectURL(currentPdfObjectUrl);
-    currentPdfObjectUrl = URL.createObjectURL(blob);
-    $("problemPdf").src = currentPdfObjectUrl;
+    currentPdfObjectUrl = null;
+    $("problemPdf").src = pdfUrl;
+    armPdfFallback($("openPdf").href);
     $("testSource").value = "sample";
     switchTestSource("sample");
     await fetchSelectedTests();
@@ -854,6 +895,7 @@ function closeProblemPdf() {
   $("expandPdf").textContent = "放大閱讀";
   document.querySelector("main").classList.remove("pdf-open");
   $("problemPdf").removeAttribute("src");
+  if ($("pdfFallback")) $("pdfFallback").hidden = true;
   if (currentPdfObjectUrl) {
     URL.revokeObjectURL(currentPdfObjectUrl);
     currentPdfObjectUrl = null;
@@ -1649,7 +1691,18 @@ $("problemId").addEventListener("change", () => {
   activeCodeKey = codeKeyFor(activeLanguage, getJudge());
   setCode(codeForLanguage(activeLanguage));
 });
-$("cpeLevel").addEventListener("change", () => renderCpeStarOptions());
+$("cpeLevel").addEventListener("change", () => {
+  localStorage.setItem("pi-oj-cpe-level", $("cpeLevel").value);
+  const groups = window.CPE_STAR_GROUPS || {problems: {}};
+  const currentProblem = localStorage.getItem("pi-oj-problem-id-cpe") || "";
+  const problems = groups.problems?.[$("cpeLevel").value] || [];
+  if (currentProblem && !problems.some((problem) => String(problem.id) === currentProblem)) {
+    localStorage.removeItem("pi-oj-problem-id-cpe");
+    if (getJudge() === "cpe") $("problemId").value = "";
+  }
+  renderCpeStarOptions();
+  updateProblemValidation();
+});
 $("cpeStar").addEventListener("change", (event) => applyCpeStarProblem(event.target.value));
 $("fetchTests").addEventListener("click", fetchSelectedTests);
 $("input").addEventListener("input", saveActiveTest);

@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const STORAGE_KEY = "pi-oj-cpe-exam";
 const HISTORY_KEY = "pi-oj-cpe-exam-history";
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 const DURATION_MS = 3 * 60 * 60 * 1000;
 const MONACO_VERSION = "0.55.1";
 const MONACO_VIM_VERSION = "0.4.4";
@@ -171,6 +171,7 @@ function defaultState() {
     activeIndex: 0,
     testSource: "sample",
     activeToolTab: "test",
+    ui: {replaceMode: "manual", customProblemLevel: "custom"},
     permissions: {aiHelper: false, aiTests: true, udebug: true, vim: false},
   };
 }
@@ -193,6 +194,7 @@ function loadState() {
       ...parsed,
       pausedTotalMs: Number(parsed.pausedTotalMs || 0),
       languageByCompilerMode: {...defaults.languageByCompilerMode, ...(parsed.languageByCompilerMode || {})},
+      ui: {...defaults.ui, ...(parsed.ui || {})},
       permissions: {...defaults.permissions, ...(parsed.permissions || {})},
       stateVersion: STATE_VERSION,
     };
@@ -303,7 +305,14 @@ function ensurePdfUi() {
         <a id="openSidePdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟</a>
         <button id="expandPdf" type="button">放大閱讀</button>
       </div>
-      <iframe id="sideProblemPdf" title="題目 PDF" sandbox="allow-same-origin"></iframe>
+      <iframe id="sideProblemPdf" title="題目 PDF"></iframe>
+      <div id="sidePdfFallback" class="pdf-fallback" hidden>
+        <div>
+          <strong>Edge 封鎖了內嵌 PDF</strong>
+          <p>題目可以正常開啟，但 Edge 有時會擋住 iframe 內的 PDF viewer。</p>
+          <a id="sideFallbackOpenPdf" href="#" target="_blank" rel="noopener noreferrer">新視窗開啟題目</a>
+        </div>
+      </div>
     `;
     $("aiPanel").after(panel);
   }
@@ -710,6 +719,7 @@ function drawProblems() {
       ...defaultState().languageByCompilerMode,
       [($("compilerMode").value || "exam")]: $("language").value || "exam_cpp_mingw",
     },
+    ui: {...defaultState().ui, ...(state.ui || {})},
     activeToolTab: state.activeToolTab || "test",
     problems,
   };
@@ -810,11 +820,16 @@ function replaceCustomProblem() {
 }
 
 function syncReplaceControls() {
+  state.ui = {...(state.ui || {})};
+  if ($("replaceMode") && state.ui.replaceMode) $("replaceMode").value = state.ui.replaceMode;
+  if ($("customProblemLevel") && state.ui.customProblemLevel) $("customProblemLevel").value = state.ui.customProblemLevel;
   const random = ($("replaceMode")?.value || "manual") === "random";
   document.querySelectorAll(".manual-replace-field").forEach((element) => { element.hidden = random; });
   const customOption = $("customProblemLevel")?.querySelector('option[value="custom"]');
   if (customOption) customOption.hidden = random;
   if (random && $("customProblemLevel")?.value === "custom") $("customProblemLevel").value = "must";
+  state.ui.replaceMode = $("replaceMode")?.value || "manual";
+  state.ui.customProblemLevel = $("customProblemLevel")?.value || "custom";
   if ($("replaceCustomProblem")) $("replaceCustomProblem").textContent = random ? "隨機替換" : "替換選中";
 }
 
@@ -1473,18 +1488,51 @@ function openUdebug() {
   window.open(`https://www.udebug.com/UVa/${problem.id}`, "_blank", "noopener,noreferrer");
 }
 
+function showPdfFallback(kind, url) {
+  const fallbackId = kind === "statement" ? "statementPdfFallback" : "sidePdfFallback";
+  const linkId = kind === "statement" ? "statementFallbackOpenPdf" : "sideFallbackOpenPdf";
+  if ($(linkId)) $(linkId).href = url || "#";
+  if ($(fallbackId)) $(fallbackId).hidden = false;
+}
+
+function hidePdfFallback(kind) {
+  const fallbackId = kind === "statement" ? "statementPdfFallback" : "sidePdfFallback";
+  if ($(fallbackId)) $(fallbackId).hidden = true;
+}
+
+function armPdfFallback(frameId, kind, url) {
+  const frame = $(frameId);
+  if (!frame) return;
+  frame.onload = () => {
+    try {
+      const text = frame.contentDocument?.body?.innerText || "";
+      if (/edge.*blocked|blocked.*edge|microsoft edge.*\u5c01\u9396|\u5df2\u5c01\u9396|\u5c01\u9396\u6b64\u9801\u9762/i.test(text)) {
+        showPdfFallback(kind, url);
+      }
+    } catch {
+      // 正常 PDF viewer 通常讀不到內容；讀不到就保留工具列的新視窗開啟當手動備援。
+    }
+  };
+}
+
 function setSidePdf(problem) {
   if (!problem) {
     $("sidePdfTitle").textContent = "題目 PDF";
     $("openSidePdf").href = "#";
     $("sideProblemPdf").removeAttribute("src");
+    hidePdfFallback("side");
     return;
   }
   const title = `UVA ${problem.id} - ${problem.title || ""}`;
   const url = `/api/problems/${problem.id}/pdf`;
   $("sidePdfTitle").textContent = title;
   $("openSidePdf").href = url;
-  if ($("sideProblemPdf").getAttribute("src") !== url) $("sideProblemPdf").src = url;
+  if ($("sideFallbackOpenPdf")) $("sideFallbackOpenPdf").href = url;
+  hidePdfFallback("side");
+  if ($("sideProblemPdf").getAttribute("src") !== url) {
+    $("sideProblemPdf").src = url;
+    armPdfFallback("sideProblemPdf", "side", url);
+  }
 }
 
 function openProblemPdf() {
@@ -1499,14 +1547,20 @@ function openProblemPdf() {
 function expandProblemPdf() {
   const problem = currentProblem();
   if (!problem) return;
+  const url = `/api/problems/${problem.id}/pdf`;
   $("statementTitle").textContent = `UVA ${problem.id} - ${problem.title || ""}`;
-  $("statementFrame").src = `/api/problems/${problem.id}/pdf`;
+  if ($("statementOpenPdf")) $("statementOpenPdf").href = url;
+  if ($("statementFallbackOpenPdf")) $("statementFallbackOpenPdf").href = url;
+  hidePdfFallback("statement");
+  $("statementFrame").src = url;
+  armPdfFallback("statementFrame", "statement", url);
   $("statementPane").hidden = false;
 }
 
 function closeStatement() {
   $("statementPane").hidden = true;
   $("statementFrame").removeAttribute("src");
+  hidePdfFallback("statement");
 }
 
 function exportRecord() {
@@ -1860,7 +1914,16 @@ $("language").addEventListener("change", () => {
 });
 ["allowAiHelper", "allowAiTests", "allowUdebug", "allowVim"].forEach((id) => $(id).addEventListener("change", applyModeDefaults));
 $("drawProblems").addEventListener("click", drawProblems);
-$("replaceMode").addEventListener("change", syncReplaceControls);
+$("replaceMode").addEventListener("change", () => {
+  state.ui = {...(state.ui || {}), replaceMode: $("replaceMode").value};
+  syncReplaceControls();
+  saveState();
+});
+$("customProblemLevel").addEventListener("change", () => {
+  state.ui = {...(state.ui || {}), customProblemLevel: $("customProblemLevel").value};
+  syncReplaceControls();
+  saveState();
+});
 $("replaceCustomProblem").addEventListener("click", replaceCustomProblem);
 ["customProblemId", "customProblemTitle"].forEach((id) => $(id).addEventListener("keydown", (event) => {
   if (event.key === "Enter") replaceCustomProblem();
