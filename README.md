@@ -129,15 +129,6 @@ OJ_GO_MEM_LIMIT=256m
 
 Codeforces automatic server-side submit is intentionally not relied on because Cloudflare blocks headless worker automation. The UI opens the submit page and copies code for manual submission.
 
-## Security
-
-Pi OJ runs submitted programs through a Docker-backed worker and is intended
-for a trusted local network or a protected private tunnel, not as an
-unrestricted public multi-tenant service. Review [SECURITY.md](SECURITY.md)
-before exposing the web port. In particular, keep `.env` and its credentials
-private, review the resource limits, and do not expose the worker or Docker
-socket directly.
-
 ## Language Groups
 
 ### Enabled Local Runners
@@ -385,3 +376,4 @@ The frontend sends only the task context to the backend; API keys stay in the wo
 - The worker has high host privileges through Docker socket access; keep ngrok/auth policies strict.
 - Use `ngrok-policy.yaml` or another access layer when exposing the app outside your private network.
 - Local runs use per-submission directories under `backend/sandboxes` and remove them after execution.
+
