@@ -17,10 +17,16 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      # PI_OJ_HARDENING_V1
+      PI_OJ_BASIC_USER: ${PI_OJ_BASIC_USER:?Please set PI_OJ_BASIC_USER in .env}
+      PI_OJ_BASIC_PASSWORD: ${PI_OJ_BASIC_PASSWORD:?Please set PI_OJ_BASIC_PASSWORD in .env}
+      PI_OJ_MAX_QUEUE_DEPTH: ${PI_OJ_MAX_QUEUE_DEPTH:-20}
     ports:
-      - "0.0.0.0:8000:8000"
+      - "${PI_OJ_BIND_HOST:-127.0.0.1}:8000:8000"
     volumes:
       - ./backend/main.py:/app/main.py
+      - ./backend/access_control.py:/app/access_control.py:ro
+      - ./backend/queue_guard.py:/app/queue_guard.py:ro
       - ./backend/tasks.py:/app/tasks.py
       - ./backend/static/index.html:/app/static/index.html
       - ./backend/static/app.js:/app/static/app.js

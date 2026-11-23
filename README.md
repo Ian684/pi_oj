@@ -377,3 +377,50 @@ The frontend sends only the task context to the backend; API keys stay in the wo
 - Use `ngrok-policy.yaml` or another access layer when exposing the app outside your private network.
 - Local runs use per-submission directories under `backend/sandboxes` and remove them after execution.
 
+## Private-instance access protection
+
+Pi OJ now requires HTTP Basic authentication for all pages and API endpoints except `/api/health`.
+When `patch_pi_oj.py --apply` runs, it adds a random password to the ignored `.env` file.
+See `.env` for `PI_OJ_BASIC_USER` and `PI_OJ_BASIC_PASSWORD`; **never commit `.env`**.
+Use an HTTPS ngrok URL for remote use, not plaintext HTTP on a LAN.
+
+The web port now binds to localhost by default: `127.0.0.1:8000:8000`.
+If you intentionally need LAN access, modify `PI_OJ_BIND_HOST`, but understand that Basic Auth
+over plaintext HTTP exposes credentials. Keep firewall rules and ngrok access policies enabled.
+
+The API has conservative **in-memory** per-route request quotas. These protect a
+single-owner/single-Web-worker deployment, not public multi-user hosting. Restart
+resets quotas. Use Redis-backed limits for multiple Web workers.
+
+**Important residual risks:** the Worker still controls the Docker socket, and
+the writable host bind mount `/sandbox` still has no enforceable total disk quota.
+Do not invite arbitrary untrusted public users until a separate sandbox runtime
+and dedicated limited-size host sandbox filesystem are configured and verified.
+
+## Queue admission and stdin safety
+
+The web API now rejects newly requested Celery tasks when the Redis `celery`
+waiting queue reaches `PI_OJ_MAX_QUEUE_DEPTH` (default 20). This is **best-effort**
+back-pressure, not an atomic global quota: Celery reserves jobs, and concurrent
+HTTP requests can still briefly exceed the limit. Existing per-route rate limits
+remain in effect.
+
+Local judge input is written into the per-submission `.stdin` file and read from
+there by the in-container runner. This avoids a blocked Docker socket write when
+a submitted program does not read its input. Input size remains restricted by
+FastAPI's request model.
+
+### Storage protection is host-level and must be enabled separately
+
+This patch copies `scripts/setup_sandbox_tmpfs.sh`; it **does not mount any
+filesystem automatically**. On the Raspberry Pi host, after checking no judging
+jobs are running and verifying `.env` `HOST_SANDBOX_ROOT` is the actual Pi path,
+run `sudo bash scripts/setup_sandbox_tmpfs.sh 512M`. This caps *all* sandbox
+submissions together to 512 MiB of RAM-backed filesystem. It is lost on reboot
+and is not a per-job disk quota. Never mount it blindly on the WSL `/mnt/c/`
+checkout or while a judge is running. Configure persistence separately.
+
+**Not solved:** `worker` still runs with host-powerful Docker Socket access.
+Neither basic authentication nor this patch turns Docker into a hardened
+public multi-tenant execution system. Use a dedicated isolated judge host or
+VM and review its network boundaries before open public access.

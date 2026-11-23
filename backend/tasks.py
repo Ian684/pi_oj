@@ -83,14 +83,22 @@ def main() -> int:
         return 127
 
     start_oom = oom_kill_count()
+    # Prefer per-submission stdin file to avoid blocking on Docker attach_socket.
+    # Keep stdin fallback for local runner tests and standalone use.
     try:
-        process = subprocess.Popen(
-            cmd,
-            stdin=sys.stdin.buffer,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        input_file = os.environ.get("OJ_STDIN_FILE")
+        stream = open(input_file, "rb") if input_file else None
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=stream if stream is not None else sys.stdin.buffer,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        finally:
+            if stream is not None:
+                stream.close()
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}\n".encode("utf-8", errors="replace")
         write_results(b"", error, truncated, False)
@@ -795,9 +803,14 @@ def run_container(
 ) -> tuple[int, str, str, dict[str, bool]]:
     client = docker.from_env()
     container = None
-    sock = None
+    # PI_OJ_REMAINING_V1
     for filename in (".stdout", ".stderr", ".runner_meta"):
         (container_dir / filename).unlink(missing_ok=True)
+    # Write bounded stdin to the per-job directory before starting Docker.
+    # No socket sendall() means a process ignoring stdin cannot block the Worker.
+    stdin_file = container_dir / ".stdin"
+    stdin_file.write_bytes(stdin_data.encode("utf-8"))
+    stdin_file.chmod(0o644)
     wrapped_command = ["python3", "/sandbox/.runner.py", "--", *command]
     try:
         container = client.containers.create(
@@ -818,27 +831,16 @@ def run_container(
             environment={
                 "OJ_STDOUT_CAPTURE_LIMIT": str(STDOUT_CAPTURE_LIMIT),
                 "OJ_STDERR_CAPTURE_LIMIT": str(STDERR_CAPTURE_LIMIT),
+                "OJ_STDIN_FILE": "/sandbox/.stdin",
                 "HOME": "/tmp",
                 "TMPDIR": "/tmp",
                 "GOCACHE": "/tmp/go-build",
                 "GOMODCACHE": "/tmp/go-mod",
                 **(env_extra or {}),
             },
-            stdin_open=True,
+            stdin_open=False,
         )
-        sock = container.attach_socket(params={"stdin": 1, "stream": 1})
         container.start()
-        try:
-            # docker-py returns a SocketIO-like wrapper here; older versions require
-            # the underlying socket for stdin, so keep the private fallback isolated.
-            raw_sock = getattr(sock, "_sock", sock)
-            if stdin_data:
-                raw_sock.sendall(stdin_data.encode("utf-8"))
-            raw_sock.shutdown(1)
-        except OSError:
-            # Some programs exit before stdin is fully sent. Keep the actual verdict
-            # from container.wait() instead of failing the whole runner.
-            pass
         result = container.wait(timeout=timeout)
         stdout = _read_text_file(container_dir / ".stdout", STDOUT_CAPTURE_LIMIT)
         stderr = _read_text_file(container_dir / ".stderr", STDERR_CAPTURE_LIMIT)
@@ -866,11 +868,6 @@ def run_container(
             container.kill()
         return 124, "", "Time limit exceeded", {"stdout_truncated": False, "stderr_truncated": False}
     finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except Exception:
-                pass
         if container:
             container.remove(force=True)
         client.close()

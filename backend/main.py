@@ -9,12 +9,17 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from access_control import install_access_control
+from queue_guard import ensure_queue_capacity
 from tasks import ask_ai_helper_task, fetch_problem_statement_html, fetch_test_data_task, judge_submission_task, submit_codeforces_task, submit_uva_task, worker
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="Pi OJ", version="0.1.0")
+# PI_OJ_REMAINING_V1
+# PI_OJ_HARDENING_V1
+install_access_control(app)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 STATEMENT_SECURITY_HEADERS = {
@@ -242,6 +247,7 @@ def problem_statement(judge: str, problem_id: str) -> HTMLResponse:
 @app.post("/api/run", status_code=202)
 def run_code(payload: RunRequest) -> dict:
     validate_language(payload.language)
+    ensure_queue_capacity()
     submission_id = uuid4().hex
     task = judge_submission_task.delay(
         submission_id=submission_id,
@@ -256,6 +262,7 @@ def run_code(payload: RunRequest) -> dict:
 @app.post("/api/ai/help", status_code=202)
 def ai_help(payload: AiHelpRequest) -> dict:
     validate_language(payload.language)
+    ensure_queue_capacity()
     task = ask_ai_helper_task.delay(
         mode=payload.mode,
         judge=payload.judge,
@@ -282,6 +289,7 @@ def ai_help(payload: AiHelpRequest) -> dict:
 @app.post("/api/uva/submit", status_code=202)
 def uva_submit(payload: UvaSubmitRequest) -> dict:
     validate_language(payload.language)
+    ensure_queue_capacity()
     if payload.judge == "codeforces":
         task = submit_codeforces_task.delay(
             problem_id=payload.problem_id,
@@ -299,6 +307,7 @@ def uva_submit(payload: UvaSubmitRequest) -> dict:
 
 @app.post("/api/tests/fetch", status_code=202)
 def fetch_tests(payload: TestFetchRequest) -> dict:
+    ensure_queue_capacity()
     task = fetch_test_data_task.delay(judge=payload.judge, problem_id=payload.problem_id, source=payload.source)
     return {"task_id": task.id, "status": "QUEUED"}
 
