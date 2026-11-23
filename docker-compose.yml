@@ -53,6 +53,9 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       JUDGE_IMAGE: pi_oj-judge:latest
       HOST_SANDBOX_ROOT: ${HOST_SANDBOX_ROOT}
+      # PI_OJ_PERSISTENT_QUOTA_V1
+      PI_OJ_REQUIRE_SANDBOX_TMPFS: ${PI_OJ_REQUIRE_SANDBOX_TMPFS:-1}
+      PI_OJ_SANDBOX_MAX_MIB: ${PI_OJ_SANDBOX_MAX_MIB:-1024}
       UVA_USERNAME: ${UVA_USERNAME:-}
       UVA_PASSWORD: ${UVA_PASSWORD:-}
       UVA_LOGIN_MODE: ${UVA_LOGIN_MODE:-browser}
@@ -97,6 +100,7 @@ services:
       OJ_GO_RUN_TIMEOUT: ${OJ_GO_RUN_TIMEOUT:-8}
     volumes:
       - ./backend/tasks.py:/app/tasks.py
+      - ./backend/sandbox_quota.py:/app/sandbox_quota.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/sandboxes:/sandboxes
     depends_on:

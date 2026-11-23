@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from celery import Celery
 from docker.errors import ContainerError, ImageNotFound
+from sandbox_quota import check_sandbox_quota, SandboxQuotaUnavailable
 
 worker = Celery(
     "oj_tasks",
@@ -916,6 +917,13 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
     spec = language_specs.get(runner_language)
     if not spec:
         return {"submission_id": submission_id, "status": "SE", "error_log": "不支援的程式語言。"}
+
+    # PI_OJ_PERSISTENT_QUOTA_V1: refuse to run untrusted code on an unbounded host directory.
+    try:
+        check_sandbox_quota()
+    except SandboxQuotaUnavailable as exc:
+        return {"submission_id": submission_id, "status": "SE",
+                "error_log": f"Sandbox quota is not active: {exc}"}
 
     container_dir = SANDBOX_ROOT / submission_id
     host_dir = HOST_SANDBOX_ROOT / submission_id

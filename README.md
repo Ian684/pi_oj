@@ -18,19 +18,33 @@ Pi OJ is a lightweight online judge workspace for Raspberry Pi 5. It provides a 
 
 ## Quick Start
 
+Install on a Linux Docker host (Raspberry Pi 5 or another supported Linux host):
+
 ```bash
 cd ~/pi_oj
 cp .env.example .env
 mkdir -p backend/sandboxes
+# Edit .env: set HOST_SANDBOX_ROOT to the absolute host path shown below,
+# and configure PI_OJ_BASIC_USER / PI_OJ_BASIC_PASSWORD.
+realpath backend/sandboxes
+nano .env
+
+# Stop judging before installing the persistent shared sandbox quota.
+sudo bash scripts/manage_sandbox_quota.sh install 512M
+bash scripts/check_sandbox_quota.sh
+
 docker compose build judge-image web worker
 docker compose up -d redis web worker
 ```
 
-Open:
+`HOST_SANDBOX_ROOT` in `.env` **must equal** the result of
+`realpath backend/sandboxes` on the machine running Docker. The host helper
+will refuse to mount a different path. The default bind address is
+`127.0.0.1:8000`; open `http://127.0.0.1:8000` locally or use ngrok over HTTPS.
+For LAN access you must deliberately configure `PI_OJ_BIND_HOST` and HTTPS.
 
-```text
-http://<raspberry-pi-ip>:8000
-```
+**Important:** this installation protects only a single-owner/private instance.
+The worker still controls Docker Socket. See [security architecture](docs/SECURITY.md).
 
 For ngrok, keep the app bound to `127.0.0.1:8000` and run:
 
@@ -115,7 +129,7 @@ Do not commit `node_modules/`, `package.json`, or `package-lock.json`; they are 
 Important values:
 
 ```dotenv
-HOST_SANDBOX_ROOT=/home/ian/pi_oj/backend/sandboxes
+HOST_SANDBOX_ROOT=/absolute/host/path/to/pi_oj/backend/sandboxes
 UVA_USERNAME=
 UVA_PASSWORD=
 UVA_LOGIN_MODE=browser
@@ -380,7 +394,7 @@ The frontend sends only the task context to the backend; API keys stay in the wo
 ## Private-instance access protection
 
 Pi OJ now requires HTTP Basic authentication for all pages and API endpoints except `/api/health`.
-When `patch_pi_oj.py --apply` runs, it adds a random password to the ignored `.env` file.
+Set a long, unique `PI_OJ_BASIC_PASSWORD` in your ignored `.env` before starting the service.
 See `.env` for `PI_OJ_BASIC_USER` and `PI_OJ_BASIC_PASSWORD`; **never commit `.env`**.
 Use an HTTPS ngrok URL for remote use, not plaintext HTTP on a LAN.
 
@@ -393,7 +407,7 @@ single-owner/single-Web-worker deployment, not public multi-user hosting. Restar
 resets quotas. Use Redis-backed limits for multiple Web workers.
 
 **Important residual risks:** the Worker still controls the Docker socket, and
-the writable host bind mount `/sandbox` still has no enforceable total disk quota.
+the host bind mount `/sandbox` needs the separate persistent tmpfs quota installation and verification.
 Do not invite arbitrary untrusted public users until a separate sandbox runtime
 and dedicated limited-size host sandbox filesystem are configured and verified.
 
@@ -410,17 +424,45 @@ there by the in-container runner. This avoids a blocked Docker socket write when
 a submitted program does not read its input. Input size remains restricted by
 FastAPI's request model.
 
-### Storage protection is host-level and must be enabled separately
+### Persistent sandbox storage quota (required for local judging)
 
-This patch copies `scripts/setup_sandbox_tmpfs.sh`; it **does not mount any
-filesystem automatically**. On the Raspberry Pi host, after checking no judging
-jobs are running and verifying `.env` `HOST_SANDBOX_ROOT` is the actual Pi path,
-run `sudo bash scripts/setup_sandbox_tmpfs.sh 512M`. This caps *all* sandbox
-submissions together to 512 MiB of RAM-backed filesystem. It is lost on reboot
-and is not a per-job disk quota. Never mount it blindly on the WSL `/mnt/c/`
-checkout or while a judge is running. Configure persistence separately.
+**PI_OJ_PERSISTENT_QUOTA_V1**: local judging now fails closed unless `/sandboxes`
+inside the worker is an explicitly mounted, size-bounded tmpfs. This avoids
+silently writing untrusted temporary files to an unbounded host bind mount.
 
-**Not solved:** `worker` still runs with host-powerful Docker Socket access.
-Neither basic authentication nor this patch turns Docker into a hardened
-public multi-tenant execution system. Use a dedicated isolated judge host or
-VM and review its network boundaries before open public access.
+On the **Linux machine running the Docker daemon** (not your Windows `/mnt/c/`
+WSL checkout), edit `.env` so `HOST_SANDBOX_ROOT` matches the full result of
+`realpath backend/sandboxes`. With the worker stopped:
+
+```bash
+docker compose stop worker
+sudo bash scripts/manage_sandbox_quota.sh install 512M
+bash scripts/check_sandbox_quota.sh
+docker compose up -d --force-recreate worker
+# Verify the mount is visible to the running worker.
+docker compose exec worker python3 -c 'from sandbox_quota import check_sandbox_quota; print(check_sandbox_quota())'
+```
+
+The helper backs up `/etc/fstab`, adds a tagged boot-persistent tmpfs entry,
+checks directory contents, and refuses unsafe mounts. `status` checks the
+mount; `remove` removes the tagged entry after stopping jobs and clearing any
+tmpfs files. It does **not** mount automatically merely by applying the code
+patch; administrators must run `install` on each Linux Docker host.
+
+- The 512 MiB quota is **shared by all submissions**, not per submission/user.
+- The storage uses RAM/swap, not physical disk. Monitor memory pressure.
+- The worker guard defaults to `PI_OJ_REQUIRE_SANDBOX_TMPFS=1` and rejects
+  missing/unbounded mounts. For strictly private local development only,
+  `PI_OJ_REQUIRE_SANDBOX_TMPFS=0` explicitly disables the guard; never expose
+  the service in that mode.
+- `PI_OJ_SANDBOX_MAX_MIB=1024` limits the largest accepted tmpfs capacity.
+  Set it consistently if you deliberately install a larger quota.
+- Existing `scripts/setup_sandbox_tmpfs.sh` is **temporary** and does not
+  survive reboot; prefer the persistent helper above.
+
+See the [Traditional Chinese deployment guide](docs/SANDBOX_QUOTA.zh-TW.md)
+for prerequisites, troubleshooting, verification and recovery.
+
+**Remaining security boundary:** the worker still controls the host-powerful
+Docker Socket. A global tmpfs quota and HTTP Basic Auth do not turn Docker
+into a public multi-tenant sandbox. See [security architecture](docs/SECURITY.md).
