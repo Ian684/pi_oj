@@ -38,69 +38,115 @@ JAVA_RUN_TIMEOUT = int(os.getenv("OJ_JAVA_RUN_TIMEOUT", "8"))
 GO_RUN_TIMEOUT = int(os.getenv("OJ_GO_RUN_TIMEOUT", "8"))
 
 RUNNER_WRAPPER = r"""#!/usr/bin/env python3
+# PI_OJ_RUNNER_V2: stop runaway output and record kernel OOM events.
 import os
 import selectors
+import signal
 import subprocess
 import sys
 
 
+def oom_kill_count():
+    # Linux cgroup v2 counter. It covers OOM-killed child processes even when
+    # PID 1 (this wrapper) survives and Docker State.OOMKilled stays false.
+    for path in ("/sys/fs/cgroup/memory.events.local", "/sys/fs/cgroup/memory.events"):
+        try:
+            with open(path, encoding="ascii") as handle:
+                for line in handle:
+                    key, value = line.split()
+                    if key == "oom_kill":
+                        return int(value)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def write_results(stdout, stderr, truncated, oom_killed):
+    with open(".stdout", "wb") as handle:
+        handle.write(stdout)
+    with open(".stderr", "wb") as handle:
+        handle.write(stderr)
+    with open(".runner_meta", "w", encoding="utf-8") as handle:
+        handle.write(f"stdout_truncated={int(truncated['stdout'])}\n")
+        handle.write(f"stderr_truncated={int(truncated['stderr'])}\n")
+        handle.write(f"oom_killed={int(oom_killed)}\n")
+
+
 def main() -> int:
     args = sys.argv[1:]
-    stdout_limit = int(os.environ.get("OJ_STDOUT_CAPTURE_LIMIT", "120000"))
-    stderr_limit = int(os.environ.get("OJ_STDERR_CAPTURE_LIMIT", "40000"))
-    if "--" in args:
-        sep = args.index("--")
-        cmd = args[sep + 1:]
-    else:
-        cmd = args
+    stdout_limit = max(0, int(os.environ.get("OJ_STDOUT_CAPTURE_LIMIT", "120000")))
+    stderr_limit = max(0, int(os.environ.get("OJ_STDERR_CAPTURE_LIMIT", "40000")))
+    cmd = args[args.index("--") + 1:] if "--" in args else args
+    truncated = {"stdout": False, "stderr": False}
     if not cmd:
-        open(".stderr", "wb").write(b"Runner command is empty\n")
-        open(".runner_meta", "w", encoding="utf-8").write("stdout_truncated=0\nstderr_truncated=0\n")
+        write_results(b"", b"Runner command is empty\n", truncated, False)
         return 127
 
-    stdout = bytearray()
-    stderr = bytearray()
-    truncated = {"stdout": False, "stderr": False}
+    start_oom = oom_kill_count()
     try:
         process = subprocess.Popen(
             cmd,
             stdin=sys.stdin.buffer,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except Exception as exc:
-        open(".stdout", "wb").write(b"")
-        open(".stderr", "wb").write(f"{type(exc).__name__}: {exc}\n".encode("utf-8", errors="replace"))
-        open(".runner_meta", "w", encoding="utf-8").write("stdout_truncated=0\nstderr_truncated=0\n")
+        error = f"{type(exc).__name__}: {exc}\n".encode("utf-8", errors="replace")
+        write_results(b"", error, truncated, False)
         return 127
 
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    streams = {
+        process.stdout: ("stdout", stdout_limit),
+        process.stderr: ("stderr", stderr_limit),
+    }
     selector = selectors.DefaultSelector()
-    streams = {process.stdout: ("stdout", stdout, stdout_limit), process.stderr: ("stderr", stderr, stderr_limit)}
-    for stream in streams:
-        selector.register(stream, selectors.EVENT_READ)
-
-    while selector.get_map():
-        for key, _ in selector.select():
-            stream = key.fileobj
-            chunk = os.read(stream.fileno(), 8192)
-            if not chunk:
-                selector.unregister(stream)
+    over_limit = False
+    try:
+        for stream in streams:
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map() and not over_limit:
+            for key, _ in selector.select():
+                stream = key.fileobj
+                chunk = os.read(stream.fileno(), 8192)
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                name, limit = streams[stream]
+                remain = max(0, limit - len(buffers[name]))
+                buffers[name].extend(chunk[:remain])
+                if len(chunk) > remain:
+                    truncated[name] = True
+                    over_limit = True
+                    break
+        if over_limit:
+            # Kill the entire program process group, not just its first PID.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    finally:
+        selector.close()
+        for stream in streams:
+            if not stream.closed:
                 stream.close()
-                continue
-            name, buffer, limit = streams[stream]
-            remain = max(0, limit - len(buffer))
-            if remain:
-                buffer.extend(chunk[:remain])
-            if len(chunk) > remain:
-                truncated[name] = True
 
-    code = process.wait()
-    open(".stdout", "wb").write(stdout)
-    open(".stderr", "wb").write(stderr)
-    with open(".runner_meta", "w", encoding="utf-8") as meta:
-        meta.write(f"stdout_truncated={int(truncated['stdout'])}\n")
-        meta.write(f"stderr_truncated={int(truncated['stderr'])}\n")
-    return code if isinstance(code, int) else 1
+    if over_limit:
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    else:
+        process.wait()
+
+    end_oom = oom_kill_count()
+    oom_killed = start_oom is not None and end_oom is not None and end_oom > start_oom
+    write_results(buffers["stdout"], buffers["stderr"], truncated, oom_killed)
+    # 122 is reserved here for a program that exceeded an output capture limit.
+    return 122 if over_limit else (process.returncode if process.returncode is not None else 1)
 
 
 if __name__ == "__main__":
@@ -713,7 +759,7 @@ def _read_text_file(path: Path, limit: int) -> str:
 
 
 def _read_runner_meta(path: Path) -> dict[str, bool]:
-    meta = {"stdout_truncated": False, "stderr_truncated": False}
+    meta = {"stdout_truncated": False, "stderr_truncated": False, "oom_killed": False}
     try:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if "=" not in line:
@@ -797,6 +843,15 @@ def run_container(
         stdout = _read_text_file(container_dir / ".stdout", STDOUT_CAPTURE_LIMIT)
         stderr = _read_text_file(container_dir / ".stderr", STDERR_CAPTURE_LIMIT)
         meta = _read_runner_meta(container_dir / ".runner_meta")
+        # Docker only reports OOMKilled when the container init process dies.
+        # The runner also checks memory.events for OOM-killed child programs.
+        try:
+            container.reload()
+            meta["oom_killed"] = meta.get("oom_killed", False) or bool(
+                container.attrs.get("State", {}).get("OOMKilled", False)
+            )
+        except docker.errors.DockerException:
+            pass
         if not stdout and not stderr and not (container_dir / ".runner_meta").exists():
             stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")[:STDERR_CAPTURE_LIMIT]
         return int(result["StatusCode"]), stdout, stderr, meta
@@ -900,6 +955,10 @@ def judge_submission_task(submission_id: str, code: str, language: str, input_da
             status = "OLE"
             message = limit_note
             stderr = (stderr + "\n" + limit_note).strip()
+        elif run_meta.get("oom_killed"):
+            status = "MLE"
+            message = "Memory limit exceeded (kernel OOM kill detected)."
+            stderr = (stderr + "\n" + message).strip()
         elif exit_code == 124:
             status = "TLE"
         elif exit_code != 0:
